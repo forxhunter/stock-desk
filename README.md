@@ -106,3 +106,7 @@ Every threshold is documented in [`config.default.yaml`](config.default.yaml). O
 ## Built with
 
 Python, [PySide6](https://doc.qt.io/qtforpython/), [pyqtgraph](https://github.com/pyqtgraph/pyqtgraph), pandas / numpy / scipy, [yfinance](https://github.com/ranaroussi/yfinance), [ib_async](https://github.com/ib-api-reloaded/ib_async), [keyring](https://github.com/jaraco/keyring).
+
+## License
+
+[MIT](LICENSE)
