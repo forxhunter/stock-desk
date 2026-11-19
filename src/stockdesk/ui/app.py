@@ -810,7 +810,7 @@ class App(QObject):
             steps.append(lambda: self.open_detail(sym))
             steps.append(lambda: self.details[sym].grab().save(str(out / "detail.png")))
             steps.append(lambda: self.details[sym].close())
-        for tab in ("briefing", "portfolio", "alerts", "research", "sources"):
+        for tab in ("briefing", "portfolio", "alerts", "research", "flow", "sources"):
             steps.append(lambda tab=tab: self.open_hub(tab))
             steps.append(lambda tab=tab: self.hub.grab().save(str(out / f"hub_{tab}.png")))
         if sym:

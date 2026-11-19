@@ -10,6 +10,8 @@ Windows 11 桌面股票小组件：同步自选股行情与持仓，给出**带�
 
 ![widget](assets/screenshot-widget.png)
 
+![异动扫描：Polymarket 大额下注与期权放量，每条写明触发的规则](assets/screenshot-scan.png)
+
 ![detail](assets/screenshot-detail.png)
 
 截图是程序自带的演示数据。

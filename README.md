@@ -8,9 +8,11 @@ It sits on the edge of your screen, syncs your positions from IBKR or a Robinhoo
 
 ![Desktop widget](assets/screenshot-widget.png)
 
+![Unusual-activity scan: Polymarket large bets and unusual option volume, each with the rule it tripped](assets/screenshot-scan.png)
+
 ![Ticker detail: chart, signal breakdown, risk levels, backtests](assets/screenshot-detail.png)
 
-*Screenshots show the built-in demo data.*
+*The widget and detail screenshots show the built-in demo holdings; the scan shows public market data.*
 
 ## What it does
 
