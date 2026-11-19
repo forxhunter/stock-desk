@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# user data, caches, personal holdings and settings never go into git
+data/
+watchlist.yaml
+*.log
+*.pickle
+.env
+*.egg-info/

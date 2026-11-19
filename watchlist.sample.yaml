@@ -1,0 +1,26 @@
+# 我的自选股。首次运行会复制为 watchlist.yaml（不进 git），之后改 watchlist.yaml。
+# 每一项只有 symbol 是必填。可选字段：
+#   shares / cost : 手动持仓（没接券商时用；接了券商后以券商同步的持仓为准）
+#   target / stop : 你自己的目标价 / 止损价（不填则按 ATR 自动给参考值）
+#   max_pct       : 你给自己定的该股最大仓位占比 (%)，用于“违反计划”提醒
+#   note          : 备注
+# 下面的持仓是演示数据，请换成你自己的。
+tickers:
+  - symbol: NVDA
+    shares: 40
+    cost: 171.20
+    note: 演示持仓
+  - symbol: AAPL
+    shares: 25
+    cost: 312.00
+    target: 400      # 我自己的目标价
+    stop: 330        # 我自己的止损价
+  - symbol: MSFT
+    shares: 10
+    cost: 498.00
+  - symbol: TSM
+    shares: 20
+    cost: 365.00
+  - symbol: AMD
+  - symbol: GOOGL
+  - symbol: QQQ

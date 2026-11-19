@@ -1,0 +1,12 @@
+PySide6>=6.7
+pyqtgraph>=0.13.7
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
+yfinance>=0.2.60
+ib_async>=2.0
+keyring>=25
+pyyaml>=6
+tzdata
+# optional, unofficial, opt-in (see README): robin_stocks>=3.4
+# dev: pytest ta

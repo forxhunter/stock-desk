@@ -1,0 +1,227 @@
+# Stock Desk 默认配置。不要直接改这个文件：
+# 程序首次运行会生成 data/config.yaml（不进 git），在那里覆盖需要改的项即可，
+# 也可以在 托盘图标 → 分析中心 → 数据源 里用界面修改。
+# 这里绝不存放密码 / token —— 它们只保存在 Windows 凭据管理器 (keyring) 里。
+
+app:
+  refresh_seconds: 120          # 行情自动刷新间隔
+  history_period: 5y            # 日线历史长度（回测 / 指标用）
+  history_ttl_minutes: 30       # 日线缓存有效期
+  benchmark: SPY                # 相对强弱的比较基准
+  up_color: green               # green = 美股习惯(绿涨红跌)；red = A股习惯(红涨绿跌)
+  always_on_top: true
+  tray_icon: false              # false = 不在任务栏右下角显示图标（从 Pipeline Hub 再次启动即显示小组件，右键小组件打开菜单）
+  opacity: 0.86                 # 小组件背景不透明度 0.3 ~ 1.0
+  account_equity: 0             # 无券商数据时用于仓位计算的账户总资金；0 = 用持仓市值合计
+
+market:
+  symbol_map: {}                # 券商代码 -> Yahoo 代码，用于非美股，例如 {HY9H: HY9H.F}（法兰克福）
+  currencies: {}                # 代码 -> 计价货币；券商同步的持仓会自带货币，一般不用填
+  reference: {}                 # 境外上市代码 -> 本土股票，用于对照，例如
+                                #   HY9H: {symbol: 000660.KS, currency: KRW, ratio: 1, name: SK Hynix（首尔）}
+                                # ratio = 1 份境外凭证对应多少股本土股票
+
+alerts:
+  bottoming:                    # 筑底信号提醒（quant/bottom.py）：6 项价格条件成立 min_score 项，且 3 项成交量条件成立 min_volume_score 项
+    enabled: true
+    symbols: []                 # 要盯的代码；留空 = 所有配置了本土对照的股票及其本土股票（如 HY9H 和 000660.KS）
+    min_score: 5
+    min_volume_score: 2         # 放量见底 / 放量上涨确认 / 涨时量大于跌时量，三项里至少成立几项
+    min_drawdown_pct: 20.0      # 距 52 周高点至少跌这么多才谈得上“筑底”
+
+notify:
+  email:                        # 邮件提醒，默认关闭；授权码只存 Windows 凭据管理器，不写在这里
+    send_from: local            # 谁来发邮件：local = 这台电脑；remote = 上面 remote.host 那台常开的机器
+    daily_enabled: true         # 每天一封信号汇总（只由 remote 那台机器发）
+    daily_at: "15:30"           # 发送时间（那台机器的本地时间）；周末不发
+    enabled: false
+    to: ""
+    smtp_host: ""               # 例如 smtp.gmail.com / smtp.qq.com / smtp.163.com
+    smtp_port: 587              # 587 = STARTTLS，465 = SSL
+    username: ""
+    kinds: [bottoming, plan_level, flow]   # 哪些提醒发邮件：筑底信号、到达你在计划里写的价位、异动扫描（只发高级别）
+
+briefing:                       # 每日简报（分析中心第一页）
+  cooloff_days: 5               # 卖出后多少个交易日内算“冷静期”
+  panic_drop_pct: 15.0          # 5 日跌幅超过它且 RSI 低于下面的值 = “急跌 + 超卖”
+  panic_rsi: 30
+  rebalance_method: risk_parity # 参考配置用哪种方法：risk_parity / min_vol / max_sharpe / mean_variance
+
+sources:
+  ibkr_tws:                     # 官方 TWS API（TWS / IB Gateway），只读连接
+    enabled: false
+    host: 127.0.0.1
+    port: 7497                  # TWS 模拟 7497 / 实盘 7496；IB Gateway 模拟 4002 / 实盘 4001
+    client_id: 47
+    timeout: 4
+  ibkr_flex:                    # 官方 Flex Web Service（天然只读），token 存 keyring
+    enabled: false
+    query_id: ""
+    min_interval_minutes: 30
+  ibkr_cp:                      # 官方 Client Portal Web API（本机网关，仅 GET）
+    enabled: false
+    base_url: https://localhost:5000/v1/api
+  robinhood_csv:                # 官方导出的账户活动 CSV（放进 data/imports/robinhood/）
+    enabled: true
+  robinhood_unofficial:         # 非官方 robin_stocks，可能违反 Robinhood 条款，默认关闭
+    enabled: false
+    username: ""
+    store_session: false        # true 会让 robin_stocks 在 ~/.tokens 下保存会话文件
+  broker_refresh_seconds: 300
+
+quant:
+  atr_stop_mult: 2.0            # 止损 = 入场价 - 2 x ATR(14)
+  reward_risk: 2.0              # 止盈 = 入场价 + 2 x 风险
+  risk_per_trade_pct: 1.0       # 单笔最大亏损占账户比例
+  vol_budget_pct: 3.0           # 单只股票贡献的年化波动预算
+  kelly_fraction: 0.25          # 分数凯利
+  kelly_cap_pct: 15.0           # 凯利仓位上限
+  max_position_pct: 25.0        # 单只仓位上限（也是集中度警告线）
+  top3_warn_pct: 60.0
+  cost_bps: 10                  # 回测单边交易成本（佣金+滑点），基点
+  optimizer_max_weight: 0.35
+  optimizer_lookback_days: 504
+  rebalance_min_trade_pct: 1.0  # 小于组合 1% 的调仓差额不提示
+  range:                        # 阶段性震荡区间高抛低吸（quant/range_trading.py）
+    enabled: true
+    lookback: 60                # 用最近 60 个交易日（不含当天）测量区间
+    edge_quantile: 0.10         # 支撑 = 低点的 10% 分位，阻力 = 高点的 90% 分位（不被单根针定义）
+    min_width_atr: 3.0          # 区间宽度至少 3×ATR……
+    max_width_atr: 12.0         # ……至多 12×ATR（再宽就是趋势，不是震荡）
+    min_width_pct: 3.0          # 且至少为价格的 3%，否则扣掉成本没有空间
+    max_er: 0.30                # 走势效率比上限：0 = 来回震荡，1 = 单边直线
+    max_drift: 0.50             # 区间内线性回归的漂移不超过区间宽度的 50%（不倾斜）
+    min_touches: 2              # 上下沿各至少被测试 2 次
+    zone: 0.20                  # 下沿 20% = 低吸区，上沿 20% = 高抛区
+    break_atr: 0.5              # 收盘超出边界 0.5×ATR = 突破 / 跌破，区间作废（也是止损位）
+    max_hold: 40                # 回测：低吸后 40 个交易日没到高抛区就离场
+    recent: 10                  # 区间失效后，10 天内仍显示原区间与突破状态
+
+behavior:                       # 行为提醒（追涨杀跌等）阈值
+  enabled: true
+  lookback_days: 45             # 只对最近 N 天的成交发提醒
+  runup_days: 5
+  runup_pct: 10.0               # N 日涨幅超过它算“急涨”
+  drop_pct: 10.0                # N 日跌幅超过它算“急跌”
+  rsi_overbought: 70
+  rsi_oversold: 30
+  above_ma_pct: 8.0             # 价格高于 20 日均线多少算“远离均线”
+  near_low_pct: 3.0             # 距 20 日最低点多少以内算“接近低点”
+  avg_down_count: 3             # 下跌趋势中连续加仓几次提醒
+  avg_down_window_days: 30
+  overtrade_count: 12           # 7 天内成交笔数超过它提醒
+  revenge_hours: 24             # 亏损卖出后多少小时内再次买入算“报复性交易”
+  revenge_loss_pct: 5.0
+  disposition_ratio: 1.5        # 亏损单平均持有天数 / 盈利单平均持有天数
+  forward_days: 20              # 回看“类似操作后来怎样”的天数
+  snooze_days: 7
+  demo_sample_trades: true      # 没有任何券商成交数据时，生成带“演示”标记的示例成交
+
+research:
+  semianalysis:
+    enabled: true
+    feeds:
+      - https://newsletter.semianalysis.com/feed
+      - https://semianalysis.com/feed/
+    min_interval_minutes: 60
+    max_items: 40
+  polymarket:
+    enabled: true
+    min_interval_minutes: 15
+    min_volume: 10000
+    per_keyword: 3
+    auto_ticker_search: true    # 按自选股的公司名自动搜索相关市场（自选股增删后自动重新搜索）
+    show_macro: true            # 也显示下面不挂股票的宏观主题（排在个股相关市场之后）；false = 只看和自选股相关的
+    exclude:                    # 问题里含这些词的市场视为噪音（只是提到公司名，不是关于公司本身）
+      - "searched"
+      - "google trends"
+      - "app store"
+      - "top free app"
+    keywords:                   # 固定关注的关键词；带 tickers 的只在这些股票还在自选里时才搜索
+      - {q: "Fed decision", label: 美联储利率}
+      - {q: "recession", label: 衰退}
+      - {q: "tariffs", label: 关税}
+      - {q: "Nvidia", label: Nvidia, tickers: [NVDA]}
+    slugs: []                   # 也可以直接固定具体市场的 slug
+
+# 公司别名：用于把文章 / 预测市场匹配到自选股。可在 data/config.yaml 里追加。
+aliases:
+  NVDA: [Nvidia, NVIDIA]
+  AMD: [AMD, Advanced Micro Devices]
+  INTC: [Intel]
+  TSM: [TSMC, Taiwan Semiconductor]
+  AVGO: [Broadcom]
+  MU: [Micron]
+  ASML: [ASML]
+  AMAT: [Applied Materials]
+  LRCX: [Lam Research]
+  KLAC: [KLA]
+  QCOM: [Qualcomm]
+  ARM: [Arm Holdings]
+  MRVL: [Marvell]
+  SMCI: [Supermicro, Super Micro]
+  MSFT: [Microsoft, Azure]
+  GOOGL: [Google, Alphabet]
+  GOOG: [Google, Alphabet]
+  AMZN: [Amazon, AWS]
+  META: [Meta Platforms, Meta]
+  AAPL: [Apple]
+  TSLA: [Tesla]
+  ORCL: [Oracle]
+  CRWV: [CoreWeave]
+  PLTR: [Palantir]
+  NFLX: [Netflix]
+  DELL: [Dell]
+  SNDK: [SanDisk]
+  WDC: [Western Digital]
+  STX: [Seagate]
+  QQQ: [Nasdaq]
+  SPY: [S&P 500]
+  VOO: [S&P 500]
+  DIA: [Dow Jones]
+  IWM: [Russell 2000]
+
+# 常开的另一台机器（ssh 密钥登录）。填了 host 后，自选 / 设置 / 计划有改动会自动同步过去；
+# 部署见 scripts/deploy_remote.py。密钥不在同步范围内，用 scripts/push_secrets.py 自己推。
+remote:
+  host: ""                      # 例如 user@server
+  dir: stock-desk               # 对方主目录下的文件夹
+  auto_sync: true
+
+# 异动扫描：Polymarket 大额下注、期权放量、期货大幅波动（只读公开数据；规则见 src/stockdesk/flow.py 顶部）
+flow:
+  enabled: true
+  scan_minutes: 10              # 每隔多少分钟扫一次
+  alert_tiers: [watch, macro]   # 哪些类别会弹提醒 / 发邮件：watch 自选相关，macro 宏观财经，other 其它
+  max_alerts: 5                 # 每轮最多提醒几条
+  email_min_severity: high      # 发邮件的最低级别（high / warn）；屏幕提醒不受这条限制
+  max_emails_per_day: 6         # 异动邮件每天最多几条
+  polymarket:
+    enabled: true
+    min_usd: 10000              # 只看单笔不小于这个金额的成交
+    big_usd: 50000              # 单笔达到这个金额算“大额单”
+    recent_minutes: 60          # 看最近多少分钟
+    window_hours: 24            # 统计同一钱包累计下注的时间窗
+    share_pct: 25               # 近期大单合计占该市场 24 小时成交的比例门槛（%）
+    wallet_usd: 100000          # 同一钱包单边净下注门槛
+    flow_usd: 60000             # “单边资金”的合计金额门槛
+    jump_pts: 5                 # 一小时内概率变化门槛（百分点）
+    extreme_price: 0.95         # 成交价高于它的买单视为“吃到期收益”，不计入判断
+    exclude_tags: [Sports, Esports]
+    exclude_titles: ["Up or Down"]
+    show_other: true            # 也列出和自选、宏观都无关的市场
+  options:
+    enabled: true
+    interval_minutes: 30
+    expiries: 4                 # 每只股票看最近几个到期日
+    min_volume: 500
+    vol_oi: 3.0                 # 当日成交量 / 未平仓量 门槛
+    min_premium: 200000         # 权利金金额门槛（美元）
+    min_dte: 2                  # 跳过几天内到期的合约（当日到期的期权成交量永远远大于未平仓量）
+    min_oi: 100                 # 未平仓量太小的行权价不看
+    per_symbol: 2               # 每只股票最多列几个合约
+    extra_symbols: [SPY, QQQ]   # 自选之外也扫描的标的
+  futures:
+    enabled: true
+    z: 2.0                      # 单日涨跌相当于近 60 日波动的几倍标准差
+    volume_mult: 1.8
