@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("STOCKDESK_LANG", "zh")     # the assertions in these tests quote the Chinese wording
+
 import numpy as np
 import pandas as pd
 import pytest

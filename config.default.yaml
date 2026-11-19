@@ -4,6 +4,7 @@
 # 这里绝不存放密码 / token —— 它们只保存在 Windows 凭据管理器 (keyring) 里。
 
 app:
+  language: auto                # 界面语言：auto（按系统语言）/ zh / en；改后需重启。Interface language (restart to apply)
   refresh_seconds: 120          # 行情自动刷新间隔
   history_period: 5y            # 日线历史长度（回测 / 指标用）
   history_ttl_minutes: 30       # 日线缓存有效期
