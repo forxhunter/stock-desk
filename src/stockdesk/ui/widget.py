@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QAbstractButton, QApplication, QHBoxLayout, QLabe
                                QVBoxLayout, QWidget)
 
 from ..engine import Snapshot, TickerView
+from ..i18n import L
 from . import theme as T
 from . import win11
 
@@ -117,18 +118,19 @@ class TickerRow(QWidget):
         if a and a.ok:
             tip.append(a.headline)
         if v.qty and T.PRIVATE:
-            tip.append("隐私模式：持仓数据已隐藏")
+            tip.append(L("隐私模式：持仓数据已隐藏", "Privacy mode: holdings hidden"))
         elif v.qty:
-            src = "你设定的" if v.levels_src == "user" else "按 ATR 自动估算的"
-            tip.append(f"进度条：{src}止损 {T.price(v.stop)} → 目标 {T.price(v.target)}；来源 {'手动填写' if v.source in ('', 'manual') else v.source}")
+            src = L("你设定的", "your") if v.levels_src == "user" else L("按 ATR 自动估算的", "ATR-estimated")
+            tip.append(L(f"进度条：{src}止损 {T.price(v.stop)} → 目标 {T.price(v.target)}；来源 {'手动填写' if v.source in ('', 'manual') else v.source}",
+                         f"Progress bar: {src} stop {T.price(v.stop)} → target {T.price(v.target)}; source {'manual entry' if v.source in ('', 'manual') else v.source}"))
         else:
-            tip.append("进度条：现价在 52 周最低 / 最高之间的位置")
+            tip.append(L("进度条：现价在 52 周最低 / 最高之间的位置", "Progress bar: price within the 52-week low / high"))
         rg = a.range if a and a.ok else None
         if rg is not None and rg.status in ("buy", "sell", "breakout_up", "breakdown"):
-            tip.append(f"震荡区间：{rg.label}（支撑 {rg.support:.2f} / 阻力 {rg.resistance:.2f}）")
+            tip.append(L(f"震荡区间：{rg.label}（支撑 {rg.support:.2f} / 阻力 {rg.resistance:.2f}）", f"Trading range: {rg.label} (support {rg.support:.2f} / resistance {rg.resistance:.2f})"))
         if v.news:
-            tip.append(f"SemiAnalysis：{v.news[0].title}")
-        tip.append("点击查看图表与依据；右键更多操作")
+            tip.append(L(f"SemiAnalysis：{v.news[0].title}", f"SemiAnalysis: {v.news[0].title}"))
+        tip.append(L("点击查看图表与依据；右键更多操作", "Click for chart and rationale; right-click for more"))
         self.setToolTip("\n".join(tip))
         self.update()
 
@@ -181,13 +183,13 @@ class TickerRow(QWidget):
         if v.news:
             p.setFont(T.font(7))
             p.setPen(QColor(T.BLUE))
-            p.drawText(QPointF(x, 22), "研")
+            p.drawText(QPointF(x, 22), L("研", "N"))
 
         # line 2: position
         p.setFont(T.font(8))
         p.setPen(QColor(T.SUB))
-        sub = f"{held:g} 股 · 成本 {T.price(v.avg_cost)}" if held else (
-            "持仓已隐藏" if getattr(v, "qty") else "未持仓" + (f" · {v.note}" if v.note else ""))
+        sub = L(f"{held:g} 股 · 成本 {T.price(v.avg_cost)}", f"{held:g} sh · cost {T.price(v.avg_cost)}") if held else (
+            L("持仓已隐藏", "Holdings hidden") if getattr(v, "qty") else L("未持仓", "No position") + (f" · {v.note}" if v.note else ""))
         p.drawText(QRectF(pad, 28, w * 0.42 - pad, 16), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetricsF(p.font()).elidedText(sub, Qt.ElideRight, w * 0.42 - pad))
 
@@ -215,7 +217,7 @@ class TickerRow(QWidget):
         f_s = T.font(7.5, family=T.NUM_FONT)
         p.setFont(f_s)
         if held and v.stop and v.target and v.progress is not None:
-            lo_txt, hi_txt, frac = f"止 {T.price(v.stop)}", f"目 {T.price(v.target)}", v.progress
+            lo_txt, hi_txt, frac = L(f"止 {T.price(v.stop)}", f"Stop {T.price(v.stop)}"), L(f"目 {T.price(v.target)}", f"Tgt {T.price(v.target)}"), v.progress
             lo_col, hi_col, fill_col = self.pal.down, self.pal.up, self.pal.sign(v.upl)
             tick = (v.avg_cost - v.stop) / (v.target - v.stop) if v.target > v.stop else None
         elif not math.isnan(v.low52) and v.high52 > v.low52 and not math.isnan(v.price):
@@ -256,7 +258,7 @@ class TickerRow(QWidget):
             txt = f"{a.stance} {a.composite:+.2f}"
         else:
             p.setPen(QColor(T.DIM))
-            txt = "等待数据"
+            txt = L("等待数据", "Waiting for data")
         p.drawText(QRectF(w - pad - right_w, y - 9, right_w, 18), Qt.AlignRight | Qt.AlignVCenter, txt)
 
         p.setPen(QPen(T.qc("#ffffff", 16), 1))
@@ -288,7 +290,7 @@ class SummaryCard(QWidget):
         x, right = r.left() + 14, r.right() - 14
         p.setFont(T.font(8))
         p.setPen(QColor(T.SUB))
-        p.drawText(QPointF(x, r.top() + 21), "持仓市值")
+        p.drawText(QPointF(x, r.top() + 21), L("持仓市值", "Holdings value"))
         p.setFont(T.font(17, True, T.NUM_FONT))
         p.setPen(QColor(T.TEXT))
         p.drawText(QPointF(x, r.top() + 50), T.money(s.total_value) if s and s.total_value else "—")
@@ -298,13 +300,13 @@ class SummaryCard(QWidget):
         p.setFont(T.font(7.5))
         warn = s.conc.warnings[0] if s.conc and s.conc.warnings and not T.PRIVATE else ""
         p.setPen(QColor(T.AMBER if warn else T.DIM))
-        txt = ("⚠ " + warn) if warn else ("隐私模式：金额与持仓已隐藏" if T.PRIVATE else
-                                              f"持仓 {held} 只 · 自选 {len(s.tickers)} 只")
+        txt = ("⚠ " + warn) if warn else (L("隐私模式：金额与持仓已隐藏", "Privacy mode: amounts and holdings hidden") if T.PRIVATE else
+                                              L(f"持仓 {held} 只 · 自选 {len(s.tickers)} 只", f"{held} held · {len(s.tickers)} on watchlist"))
         p.drawText(QRectF(x, r.top() + 55, r.width() - 28, 16), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetricsF(p.font()).elidedText(txt, Qt.ElideRight, r.width() - 28))
         for i, (label, val, extra) in enumerate((
-                ("今日", s.day_pnl, T.secret(T.pct(s.day_pct))),
-                ("浮盈", s.total_upl, T.secret(T.pct(s.total_upl / s.total_cost * 100 if s.total_cost else 0.0, 1))))):
+                (L("今日", "Today"), s.day_pnl, T.secret(T.pct(s.day_pct))),
+                (L("浮盈", "P&L"), s.total_upl, T.secret(T.pct(s.total_upl / s.total_cost * 100 if s.total_cost else 0.0, 1))))):
             y = r.top() + 12 + i * 20
             col = T.SUB if T.PRIVATE else self.pal.sign(val)
             f = T.font(9, True, T.NUM_FONT)
@@ -367,16 +369,16 @@ class DeskWidget(QWidget):
         title = QLabel("Stock Desk")
         title.setFont(T.font(10.5, True, T.NUM_FONT))
         title.setStyleSheet(f"color:{T.TEXT}; background:transparent;")
-        self.badge = QLabel("演示")
+        self.badge = QLabel(L("演示", "Demo"))
         self.badge.setFont(T.font(7.5))
         self._style_badge(T.AMBER)
-        self.btn_refresh = IconButton(T.ICON["refresh"], "立即刷新")
-        self.btn_add = IconButton(T.ICON["add"], "添加自选股")
-        self.btn_eye = IconButton(T.ICON["eye_off" if T.PRIVATE else "eye"], "隐藏 / 显示关键数据（持仓、金额、盈亏）")
-        self.btn_bell = IconButton(T.ICON["bell"], "行为提醒")
-        self.btn_hub = IconButton(T.ICON["hub"], "分析中心：组合优化 / 行为提醒 / 交易前检查 / 资讯 / 数据源")
-        self.btn_fold = IconButton(T.ICON["up"], "折叠 / 展开")
-        self.btn_close = IconButton(T.ICON["close"], "隐藏（在 Pipeline Hub 里再点一次 Stock Desk 即可显示；右键小组件可退出）")
+        self.btn_refresh = IconButton(T.ICON["refresh"], L("立即刷新", "Refresh now"))
+        self.btn_add = IconButton(T.ICON["add"], L("添加自选股", "Add to watchlist"))
+        self.btn_eye = IconButton(T.ICON["eye_off" if T.PRIVATE else "eye"], L("隐藏 / 显示关键数据（持仓、金额、盈亏）", "Hide / show key data (positions, amounts, P&L)"))
+        self.btn_bell = IconButton(T.ICON["bell"], L("行为提醒", "Behaviour alerts"))
+        self.btn_hub = IconButton(T.ICON["hub"], L("分析中心：组合优化 / 行为提醒 / 交易前检查 / 资讯 / 数据源", "Analysis hub: portfolio optimisation / behaviour alerts / pre-trade check / news / sources"))
+        self.btn_fold = IconButton(T.ICON["up"], L("折叠 / 展开", "Fold / unfold"))
+        self.btn_close = IconButton(T.ICON["close"], L("隐藏（在 Pipeline Hub 里再点一次 Stock Desk 即可显示；右键小组件可退出）", "Hide (click Stock Desk again in Pipeline Hub to show it; right-click the widget to quit)"))
         head.addWidget(title)
         head.addSpacing(6)
         head.addWidget(self.badge)
@@ -411,11 +413,11 @@ class DeskWidget(QWidget):
         self.ctx.setFont(T.font(8))
         self.ctx.setStyleSheet(f"color:{T.TEXT}; background:rgba(255,255,255,14); border-radius:6px; padding:5px 9px;")
         self.ctx.setCursor(Qt.PointingHandCursor)
-        self.ctx.setToolTip("预测市场概率与研究文章（背景信息）。点击查看全部。")
+        self.ctx.setToolTip(L("预测市场概率与研究文章（背景信息）。点击查看全部。", "Prediction-market odds and research articles (background). Click to see all."))
         self.ctx.mousePressEvent = lambda e: self.hub_requested.emit("research")
         self.ctx.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         root.addWidget(self.ctx)
-        self.status = QLabel("正在加载行情…")
+        self.status = QLabel(L("正在加载行情…", "Loading quotes…"))
         self.status.setFont(T.font(7.5))
         self.status.setStyleSheet(f"color:{T.DIM}; background:transparent; padding:2px 10px 0 10px;")
         self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
@@ -662,16 +664,19 @@ class DeskWidget(QWidget):
         for row, v in zip(self._rows, snap.tickers):
             row.set_view(v, self.pal)
 
-        if snap.mode == "演示":
-            badge = "演示模式" if snap.sample_holdings else "手动持仓"
-            tip = ("行情是 Yahoo 的真实数据；持仓仍是 watchlist.yaml 里自带的示例数字（不是你的）。\n"
-                   "改成你自己的持仓，或在 分析中心 → 数据源 里连接 IBKR / 导入 Robinhood CSV。"
+        if snap.mode == L("演示", "Demo"):
+            badge = L("演示模式", "Demo") if snap.sample_holdings else L("手动持仓", "Manual")
+            tip = (L("行情是 Yahoo 的真实数据；持仓仍是 watchlist.yaml 里自带的示例数字（不是你的）。\n"
+                     "改成你自己的持仓，或在 分析中心 → 数据源 里连接 IBKR / 导入 Robinhood CSV。",
+                     "Quotes are real Yahoo data; holdings are still the sample numbers bundled in watchlist.yaml (not yours).\n"
+                     "Replace them with your own holdings, or connect IBKR / import a Robinhood CSV under Analysis hub → Sources.")
                    if snap.sample_holdings else
-                   "行情是 Yahoo 的真实数据；持仓来自你在 watchlist.yaml 里手动填写的数量（未连接券商）。")
+                   L("行情是 Yahoo 的真实数据；持仓来自你在 watchlist.yaml 里手动填写的数量（未连接券商）。",
+                     "Quotes are real Yahoo data; holdings are the quantities you entered by hand in watchlist.yaml (no broker connected)."))
         else:
             badge, tip = snap.mode, ""
         self.badge.setText(badge)
-        self._style_badge(T.AMBER if snap.mode in ("演示", "券商离线") else T.GREEN)
+        self._style_badge(T.AMBER if snap.mode in (L("演示", "Demo"), L("券商离线", "Broker offline")) else T.GREEN)
         self.badge.setToolTip("\n".join([tip] + [m for _, m in snap.sources.values()]).strip())
         self.btn_bell.set_badge(len(snap.alerts))
 
@@ -679,12 +684,12 @@ class DeskWidget(QWidget):
         for o in snap.odds[:8]:
             d = "" if o.change_1w is None or abs(o.change_1w) < 0.0005 else \
                 f" {'▲' if o.change_1w > 0 else '▼'}{abs(o.change_1w)*100:.0f}"
-            ctx.append((f"预测市场 {o.prob*100:.0f}%{d}　{o.question}", T.TEXT))
+            ctx.append((L(f"预测市场 {o.prob*100:.0f}%{d}　{o.question}", f"Prediction market {o.prob*100:.0f}%{d}  {o.question}"), T.TEXT))
         for n in snap.news[:4]:
             tag = f"[{','.join(n.tickers[:3])}] " if n.tickers else ""
             ctx.append((f"SemiAnalysis　{tag}{n.title}", T.TEXT))
         for a in snap.alerts[:3]:
-            ctx.insert(0, (f"行为提醒　{a.title}", T.AMBER))
+            ctx.insert(0, (L(f"行为提醒　{a.title}", f"Behaviour alert  {a.title}"), T.AMBER))
         self._ctx = ctx
         self._ctx_i = 0
         self._show_ctx()
@@ -694,7 +699,7 @@ class DeskWidget(QWidget):
             self.status.setText(f"⚠ {snap.market_msg}")
             self.status.setStyleSheet(f"color:{T.AMBER}; background:transparent; padding:2px 10px 0 10px;")
         else:
-            self.status.setText(f"更新于 {t} · 只读 · 仅供参考，非投资建议")
+            self.status.setText(L(f"更新于 {t} · 只读 · 仅供参考，非投资建议", f"Updated {t} · read-only · for reference, not investment advice"))
             self.status.setStyleSheet(f"color:{T.DIM}; background:transparent; padding:2px 10px 0 10px;")
         self._relayout()
         self.update()

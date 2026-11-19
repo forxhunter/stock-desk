@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
+from ..i18n import L
 from ..models import BrokerData, Position, Trade
 from .base import AdapterError, AdapterUnavailable, BrokerAdapter, HttpGet, get_json, http_get
 
@@ -39,15 +40,17 @@ class IbkrClientPortalAdapter(BrokerAdapter):
 
     def _read(self, path: str):
         if not any(p.match(path) for p in _ALLOWED):
-            raise AdapterError(f"路径不在只读白名单内：{path}")
+            raise AdapterError(L(f"路径不在只读白名单内：{path}", f"Path is not on the read-only allowlist: {path}"))
         try:
             return get_json(self._get, self.base_url + path, timeout=8.0, insecure_localhost=True)
         except AdapterUnavailable:
-            raise AdapterUnavailable("连不上 Client Portal Gateway（默认 https://localhost:5000）。"
-                                     "请先启动网关并在浏览器里登录。") from None
+            raise AdapterUnavailable(L("连不上 Client Portal Gateway（默认 https://localhost:5000）。"
+                                                  "请先启动网关并在浏览器里登录。",
+                                                  "Cannot reach the Client Portal Gateway (default https://localhost:5000). "
+                                                  "Start the gateway and sign in in the browser first.")) from None
         except AdapterError as e:
             if "401" in str(e) or "403" in str(e):
-                raise AdapterUnavailable("Client Portal Gateway 未登录或会话已过期，请在浏览器重新登录。") from None
+                raise AdapterUnavailable(L("Client Portal Gateway 未登录或会话已过期，请在浏览器重新登录。", "The Client Portal Gateway is not signed in or the session has expired. Sign in again in the browser.")) from None
             raise
 
     def fetch(self) -> BrokerData:

@@ -17,6 +17,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from ..i18n import L
 from . import indicators as ind
 from . import range_trading as rt
 
@@ -109,15 +110,30 @@ def strat_trend_filter(bars: pd.DataFrame) -> pd.Series:
 
 
 STRATEGIES: dict[str, tuple[str, str, Callable[[pd.DataFrame], pd.Series]]] = {
-    "ma_50_200": ("均线金叉 50/200", "50日均线在200日均线上方时持有", strat_ma_cross),
-    "ma_20_50": ("均线金叉 20/50", "20日均线在50日均线上方时持有",
+    "ma_50_200": (L("均线金叉 50/200", "MA cross 50/200"),
+                  L("50日均线在200日均线上方时持有", "Hold while the 50-day MA is above the 200-day MA"), strat_ma_cross),
+    "ma_20_50": (L("均线金叉 20/50", "MA cross 20/50"),
+                 L("20日均线在50日均线上方时持有", "Hold while the 20-day MA is above the 50-day MA"),
                  lambda b: strat_ma_cross(b, 20, 50)),
-    "macd": ("MACD 金叉", "MACD 线在信号线上方时持有", strat_macd),
-    "trend_filter": ("趋势过滤", "收盘价高于200日均线且 MACD 金叉时持有", strat_trend_filter),
-    "rsi_reversion": ("RSI 超卖反弹", "RSI(14)<30 买入，回到 55 以上卖出", strat_rsi_reversion),
-    "boll_reversion": ("布林下轨反弹", "收盘跌破布林下轨买入，回到中轨卖出", strat_bollinger_reversion),
-    "range_trading": ("震荡区间高抛低吸", "横盘区间内跌到支撑附近（下沿20%）买入，涨到阻力附近（上沿20%）卖出；"
-                      "跌破支撑 0.5×ATR 止损，40 天未到目标离场", rt.strat_range),
+    "macd": (L("MACD 金叉", "MACD cross"),
+             L("MACD 线在信号线上方时持有", "Hold while the MACD line is above the signal line"), strat_macd),
+    "trend_filter": (L("趋势过滤", "Trend filter"),
+                     L("收盘价高于200日均线且 MACD 金叉时持有",
+                       "Hold while the close is above the 200-day MA and MACD is above its signal line"),
+                     strat_trend_filter),
+    "rsi_reversion": (L("RSI 超卖反弹", "RSI oversold bounce"),
+                      L("RSI(14)<30 买入，回到 55 以上卖出", "Buy when RSI(14)<30, sell when it is back above 55"),
+                      strat_rsi_reversion),
+    "boll_reversion": (L("布林下轨反弹", "Bollinger lower-band bounce"),
+                       L("收盘跌破布林下轨买入，回到中轨卖出",
+                         "Buy when the close falls below the lower band, sell when it is back at the middle band"),
+                       strat_bollinger_reversion),
+    "range_trading": (L("震荡区间高抛低吸", "Trading range: buy low, sell high"),
+                      L("横盘区间内跌到支撑附近（下沿20%）买入，涨到阻力附近（上沿20%）卖出；"
+                        "跌破支撑 0.5×ATR 止损，40 天未到目标离场",
+                        "Within a sideways range, buy near support (bottom 20%) and sell near resistance (top 20%); "
+                        "stop out if price breaks support by 0.5×ATR, exit after 40 days if the target is not reached"),
+                      rt.strat_range),
 }
 
 
@@ -128,7 +144,7 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, cost_bps: float = 10.0,
     res = BacktestResult(key=key, label=label, rule=rule)
     valid = signal.dropna()
     if len(valid) < 30:
-        res.notes.append("历史数据不足，无法回测。")
+        res.notes.append(L("历史数据不足，无法回测。", "Not enough history to backtest."))
         return res
     start = valid.index[0]
     bars = bars.loc[start:]
@@ -195,11 +211,13 @@ def run_backtest(bars: pd.DataFrame, signal: pd.Series, cost_bps: float = 10.0,
             res.profit_factor = float(sum(wins) / -sum(losses))
 
     if res.n_trades < 10:
-        res.notes.append(f"只有 {res.n_trades} 笔完整交易，胜率在统计上不可靠。")
+        res.notes.append(L(f"只有 {res.n_trades} 笔完整交易，胜率在统计上不可靠。",
+                           f"Only {res.n_trades} completed trades; the win rate is statistically unreliable."))
     if res.first_half_return * res.second_half_return < 0:
-        res.notes.append("前后两段历史表现方向相反，规则不稳定。")
+        res.notes.append(L("前后两段历史表现方向相反，规则不稳定。",
+                           "The first and second halves of the history moved in opposite directions; the rule is unstable."))
     if res.total_return < res.bh_return:
-        res.notes.append("同期跑输买入持有。")
+        res.notes.append(L("同期跑输买入持有。", "Underperformed buy-and-hold over the same period."))
     return res
 
 
@@ -213,6 +231,6 @@ def backtest_all(bars: pd.DataFrame, cost_bps: float = 10.0,
             out.append(run_backtest(bars, fn(bars), cost_bps, key, label, rule))
         except Exception as exc:  # a broken series must not take the whole refresh down
             r = BacktestResult(key=key, label=label, rule=rule)
-            r.notes.append(f"回测失败：{type(exc).__name__}")
+            r.notes.append(L(f"回测失败：{type(exc).__name__}", f"Backtest failed: {type(exc).__name__}"))
             out.append(r)
     return out

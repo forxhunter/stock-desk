@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from ..i18n import L
 from ..credentials import redact
 from ..models import BrokerData, Position, Trade
 from .base import AdapterError, AdapterUnavailable, BrokerAdapter, HttpGet, http_get
@@ -46,7 +47,7 @@ def parse_statement(xml_bytes: bytes) -> BrokerData:
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError:
-        raise AdapterError("Flex 报告不是合法的 XML") from None
+        raise AdapterError(L("Flex 报告不是合法的 XML", "The Flex report is not valid XML")) from None
     data = BrokerData()
     for node in root.iter("OpenPosition"):
         a = node.attrib
@@ -79,7 +80,7 @@ def parse_statement(xml_bytes: bytes) -> BrokerData:
 
 class IbkrFlexAdapter(BrokerAdapter):
     name = "ibkr_flex"
-    label = "IBKR (Flex 报告)"
+    label = L("IBKR (Flex 报告)", "IBKR (Flex report)")
     official = True
 
     def __init__(self, token: str | None, query_id: str, getter: HttpGet = http_get,
@@ -89,7 +90,7 @@ class IbkrFlexAdapter(BrokerAdapter):
 
     def fetch(self) -> BrokerData:
         if not self._token or not self.query_id:
-            raise AdapterUnavailable("Flex 未配置：需要 Query ID 和 token（token 保存在 Windows 凭据管理器）")
+            raise AdapterUnavailable(L("Flex 未配置：需要 Query ID 和 token（token 保存在 Windows 凭据管理器）", "Flex is not set up: a Query ID and a token are needed (the token is kept in Windows Credential Manager)"))
         try:
             return parse_statement(self._download())
         except AdapterError as e:
@@ -100,13 +101,15 @@ class IbkrFlexAdapter(BrokerAdapter):
         try:
             root = ET.fromstring(body)
         except ET.ParseError:
-            raise AdapterError("Flex 返回内容无法解析") from None
+            raise AdapterError(L("Flex 返回内容无法解析", "The Flex response could not be parsed")) from None
         if (root.findtext("Status") or "") != "Success":
-            raise AdapterError(f"Flex 请求被拒绝：{root.findtext('ErrorCode') or ''} "
-                               f"{root.findtext('ErrorMessage') or ''}".strip())
+            raise AdapterError(L(f"Flex 请求被拒绝：{root.findtext('ErrorCode') or ''} "
+                               f"{root.findtext('ErrorMessage') or ''}".strip(),
+                               f"Flex request rejected: {root.findtext('ErrorCode') or ''} "
+                               f"{root.findtext('ErrorMessage') or ''}".strip()))
         code, base = root.findtext("ReferenceCode"), root.findtext("Url")
         if not code or not base or not base.startswith("https://"):
-            raise AdapterError("Flex 返回缺少 ReferenceCode / Url")
+            raise AdapterError(L("Flex 返回缺少 ReferenceCode / Url", "The Flex response is missing ReferenceCode / Url"))
         for _ in range(self._max_polls):
             self._sleep(self._poll)
             _, _, data = self._get(f"{base}?q={code}&t={self._token}&v=3")
@@ -118,7 +121,7 @@ class IbkrFlexAdapter(BrokerAdapter):
                     r = ET.fromstring(data)
                     msg = f"{r.findtext('ErrorCode') or ''} {r.findtext('ErrorMessage') or ''}".strip()
                 except ET.ParseError:
-                    msg = "未知错误"
-                raise AdapterError(f"Flex 报告生成失败：{msg}")
+                    msg = L("未知错误", "unknown error")
+                raise AdapterError(L(f"Flex 报告生成失败：{msg}", f"Flex report failed: {msg}"))
             return data
-        raise AdapterUnavailable("Flex 报告仍在生成，稍后会自动重试")
+        raise AdapterUnavailable(L("Flex 报告仍在生成，稍后会自动重试", "The Flex report is still being generated; will retry automatically"))

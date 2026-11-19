@@ -5,6 +5,8 @@ import math
 
 from PySide6.QtGui import QColor, QFont
 
+from ..i18n import L
+
 GREEN = "#2fd08a"
 RED = "#ff5c6c"
 AMBER = "#f5b547"
@@ -51,7 +53,7 @@ class Palette:
         return self.up if x > 0 else self.down
 
     def stance(self, stance: str) -> str:
-        return {"偏多": self.up, "偏空": self.down, "中性": AMBER}.get(stance, DIM)
+        return {L("偏多", "Bullish"): self.up, L("偏空", "Bearish"): self.down, L("中性", "Neutral"): AMBER}.get(stance, DIM)
 
 
 def font(size: float, bold: bool = False, family: str = UI_FONT) -> QFont:

@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from ..i18n import L
 from ..models import Trade
 
 _NY = ZoneInfo("America/New_York")
@@ -29,7 +30,7 @@ def make_demo_trades(bars: dict[str, pd.DataFrame], symbols: list[str], runup_da
         b = bars[sym]
         day, px = b.index[i], float(b["close"].iloc[i])
         out.append(Trade(f"demo:{sym}:{day.date()}:{side}:{hour}", sym, side, qty, round(px, 2),
-                         _ts(day, hour), "演示", 0.0, True))
+                         _ts(day, hour), L("演示", "Demo"), 0.0, True))
 
     # 1) a buy on the day with the strongest recent run-up, 2) a sell on the weakest day
     best = max(syms, key=lambda s: (bars[s]["close"].pct_change(runup_days).iloc[-30:]).max())

@@ -32,6 +32,7 @@ from datetime import datetime
 from urllib.parse import quote
 
 from .adapters.base import AdapterError, HttpGet, get_json, http_get
+from .i18n import L
 
 DATA = "https://data-api.polymarket.com/v2"
 GAMMA = "https://gamma-api.polymarket.com"
@@ -50,12 +51,15 @@ DEFAULTS: dict = {
                 "min_premium": 200000.0, "min_dte": 2, "min_oi": 100, "per_symbol": 2,
                 "extra_symbols": ["SPY", "QQQ"], "max_items": 20},
     "futures": {"enabled": True, "z": 2.0, "volume_mult": 1.8,
-                "symbols": {"ES=F": "标普 500 期货", "NQ=F": "纳指 100 期货", "^VIX": "VIX 波动率指数",
-                            "ZN=F": "10 年期美债期货", "CL=F": "原油期货", "GC=F": "黄金期货"}},
+                "symbols": {"ES=F": L("标普 500 期货", "S&P 500 futures"), "NQ=F": L("纳指 100 期货", "Nasdaq 100 futures"),
+                            "^VIX": L("VIX 波动率指数", "VIX volatility index"),
+                            "ZN=F": L("10 年期美债期货", "10-year Treasury futures"),
+                            "CL=F": L("原油期货", "Crude oil futures"), "GC=F": L("黄金期货", "Gold futures")}},
     "alert_tiers": ["watch", "macro"], "max_alerts": 5, "email_min_severity": "high", "max_emails_per_day": 6,
 }
 
-TIER_LABEL = {"watch": "自选相关", "macro": "宏观 / 财经", "other": "其它"}
+TIER_LABEL = {"watch": L("自选相关", "Watchlist-related"), "macro": L("宏观 / 财经", "Macro / finance"),
+              "other": L("其它", "Other")}
 
 
 def settings(cfg: dict | None) -> dict:
@@ -179,7 +183,7 @@ def _wallet(t: dict) -> str:
     w = str(t.get("proxy_wallet") or "")
     name = str(t.get("pseudonym") or t.get("name") or "").strip()
     short = f"{w[:6]}…{w[-4:]}" if len(w) > 12 else w
-    return f"{name}（{short}）" if name else short
+    return L(f"{name}（{short}）", f"{name} ({short})") if name else short
 
 
 def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str, list[str]],
@@ -239,6 +243,7 @@ def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str
         low_info_usd += sum(abs(signed(t)) for t in dull)
 
         facts: list[str] = []
+        rules: set[str] = set()           # which rules fired (identifiers; ``facts`` is display text)
         score = 0.0
         gross = sum(abs(signed(t)) for t in info)
         net = sum(signed(t) for t in info)
@@ -246,13 +251,20 @@ def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str
         if top is not None and abs(signed(top)) >= float(p["big_usd"]):
             amt = abs(signed(top))
             score += 2 + (1 if amt >= 4 * float(p["big_usd"]) else 0)
-            who = "买入" if str(top.get("side")).upper() == "BUY" else "卖出"
-            facts.append(f"大额单：{_wallet(top)} 一笔{who}「{top.get('outcome')}」{usd(amt)}，成交价 {_f(top.get('price')) * 100:.1f}%"
-                         f"（{datetime.fromtimestamp(_f(top.get('timestamp'))):%H:%M}）")
+            buying = str(top.get("side")).upper() == "BUY"
+            who = L("买入", "bought") if buying else L("卖出", "sold")
+            rules.add("big")
+            facts.append(L(f"大额单：{_wallet(top)} 一笔{who}「{top.get('outcome')}」{usd(amt)}，成交价 {_f(top.get('price')) * 100:.1f}%"
+                           f"（{datetime.fromtimestamp(_f(top.get('timestamp'))):%H:%M}）",
+                           f"Large order: {_wallet(top)} {who} \"{top.get('outcome')}\" for {usd(amt)} in one trade, "
+                           f"at a price of {_f(top.get('price')) * 100:.1f}% "
+                           f"({datetime.fromtimestamp(_f(top.get('timestamp'))):%H:%M})"))
         if vol24 > 0 and gross >= 2 * float(p["min_usd"]) and gross / vol24 * 100 >= float(p["share_pct"]):
             score += 2
-            facts.append(f"相对成交异常：近 {int(p['recent_minutes'])} 分钟的大单合计 {usd(gross)}，"
-                         f"相当于该市场 24 小时成交（{usd(vol24)}）的 {gross / vol24 * 100:.0f}%")
+            facts.append(L(f"相对成交异常：近 {int(p['recent_minutes'])} 分钟的大单合计 {usd(gross)}，"
+                           f"相当于该市场 24 小时成交（{usd(vol24)}）的 {gross / vol24 * 100:.0f}%",
+                           f"Unusual relative to volume: large orders in the last {int(p['recent_minutes'])} minutes add up to "
+                           f"{usd(gross)}, which is {gross / vol24 * 100:.0f}% of this market's 24-hour volume ({usd(vol24)})"))
         wallets: dict[str, float] = {}
         for t in rows:
             if not low_info(t):
@@ -263,14 +275,21 @@ def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str
             score += 2
             n = sum(1 for t in rows if str(t.get("proxy_wallet")) == whale[0] and not low_info(t))
             one = next(t for t in info if str(t.get("proxy_wallet")) == whale[0])
-            facts.append(f"同一钱包集中下注：{_wallet(one)} {int(p['window_hours'])} 小时内 {n} 笔，"
-                         f"净押「{outcomes[0 if whale[1] > 0 else 1]}」{usd(whale[1])}")
+            rules.add("wallet")
+            facts.append(L(f"同一钱包集中下注：{_wallet(one)} {int(p['window_hours'])} 小时内 {n} 笔，"
+                           f"净押「{outcomes[0 if whale[1] > 0 else 1]}」{usd(whale[1])}",
+                           f"One wallet concentrating bets: {_wallet(one)} placed {n} trades within {int(p['window_hours'])} hours, "
+                           f"net \"{outcomes[0 if whale[1] > 0 else 1]}\" {usd(whale[1])}"))
         if len(info) >= 3 and gross >= float(p["flow_usd"]) and abs(net) / gross >= 0.8:
             score += 1.5
-            facts.append(f"单边资金：{len(info)} 笔大单合计 {usd(gross)}，其中 {abs(net) / gross * 100:.0f}% 在同一方向")
+            facts.append(L(f"单边资金：{len(info)} 笔大单合计 {usd(gross)}，其中 {abs(net) / gross * 100:.0f}% 在同一方向",
+                           f"One-sided money: {len(info)} large orders, {usd(gross)} in total, "
+                           f"{abs(net) / gross * 100:.0f}% of it in the same direction"))
         if hour_pts is not None and abs(hour_pts) >= float(p["jump_pts"]):
             score += 2
-            facts.append(f"价格跳变：「{outcomes[0]}」一小时内 {hour_pts:+.1f} 个百分点")
+            rules.add("jump")
+            facts.append(L(f"价格跳变：「{outcomes[0]}」一小时内 {hour_pts:+.1f} 个百分点",
+                           f"Price jump: \"{outcomes[0]}\" moved {hour_pts:+.1f} percentage points within an hour"))
         if not facts:
             continue
 
@@ -282,23 +301,39 @@ def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str
         if tier == "watch":
             score *= 1.5
         side = outcomes[0 if net >= 0 else 1] if info else ""
-        prob = f"，现在「{outcomes[0]}」{prices[0] * 100:.1f}%" if prices and 0 <= prices[0] <= 1 else ""
-        headline = (f"近 {int(p['recent_minutes'])} 分钟 {len(info)} 笔大单，净流向「{side}」{usd(net)}{prob}" if info
-                    else f"近 {int(p['recent_minutes'])} 分钟只有高确定性价位的大单{prob}")
+        prob = (L(f"，现在「{outcomes[0]}」{prices[0] * 100:.1f}%", f"; now \"{outcomes[0]}\" at {prices[0] * 100:.1f}%")
+                if prices and 0 <= prices[0] <= 1 else "")
+        headline = (L(f"近 {int(p['recent_minutes'])} 分钟 {len(info)} 笔大单，净流向「{side}」{usd(net)}{prob}",
+                      f"Large orders in the last {int(p['recent_minutes'])} minutes: {len(info)}, net flow to \"{side}\" {usd(net)}{prob}")
+                    if info else
+                    L(f"近 {int(p['recent_minutes'])} 分钟只有高确定性价位的大单{prob}",
+                      f"Only large orders at near-certain prices in the last {int(p['recent_minutes'])} minutes{prob}"))
         reading = []
         if tickers:
-            reading.append(f"和你的自选 {'、'.join(tickers)} 有关：对照这只股票当天的走势和新闻，看两边是否互相印证；"
-                           "只有一边在动时，先当作噪音。")
-        if any(f.startswith("价格跳变") for f in facts):
-            reading.append("先找有没有对应的新闻。有新闻的跳变是在消化消息；没有新闻、只靠一两笔单推出来的跳变常常会回吐。")
-        if any(f.startswith(("大额单", "同一钱包")) for f in facts):
-            reading.append("大单只说明有人愿意押这么多，不说明他知道什么：可能是对冲别处的仓位、做市，或单纯判断错了。"
-                           "可以点开市场看这个钱包的历史盈亏再决定要不要当回事。")
+            reading.append(L(f"和你的自选 {'、'.join(tickers)} 有关：对照这只股票当天的走势和新闻，看两边是否互相印证；"
+                             "只有一边在动时，先当作噪音。",
+                             f"Related to your watchlist ({', '.join(tickers)}): compare with the stock's move and news that day "
+                             "to see whether the two back each other up; when only one side is moving, treat it as noise first."))
+        if "jump" in rules:
+            reading.append(L("先找有没有对应的新闻。有新闻的跳变是在消化消息；没有新闻、只靠一两笔单推出来的跳变常常会回吐。",
+                             "First look for matching news. A jump with news is the market digesting it; a jump with no news, "
+                             "pushed by just one or two orders, often reverses."))
+        if rules & {"big", "wallet"}:
+            reading.append(L("大单只说明有人愿意押这么多，不说明他知道什么：可能是对冲别处的仓位、做市，或单纯判断错了。"
+                             "可以点开市场看这个钱包的历史盈亏再决定要不要当回事。",
+                             "A large order only shows that someone was willing to bet that much, not that they know anything: it may "
+                             "hedge a position elsewhere, be market making, or simply be wrong. You can open the market and check "
+                             "this wallet's past profit and loss before deciding how much weight to give it."))
         if vol24 and vol24 < 5 * float(p["big_usd"]):
-            reading.append(f"这个市场 24 小时只成交 {usd(vol24)}，盘子小，一笔单就能把价格推走，概率的参考价值有限。")
+            reading.append(L(f"这个市场 24 小时只成交 {usd(vol24)}，盘子小，一笔单就能把价格推走，概率的参考价值有限。",
+                             f"This market traded only {usd(vol24)} in 24 hours; it is thin, one order can move the price, "
+                             "so the probability is of limited reference value."))
         if dull:
-            reading.append(f"另有 {len(dull)} 笔成交价在 {ext * 100:.0f}% 以上的大单（{usd(sum(abs(signed(t)) for t in dull))}），"
-                           "多半是吃到期收益，没有计入上面的判断。")
+            reading.append(L(f"另有 {len(dull)} 笔成交价在 {ext * 100:.0f}% 以上的大单（{usd(sum(abs(signed(t)) for t in dull))}），"
+                             "多半是吃到期收益，没有计入上面的判断。",
+                             f"Also at prices of {ext * 100:.0f}% or more: {len(dull)} more large trade(s), "
+                             f"{usd(sum(abs(signed(t)) for t in dull))}; mostly yield collection into expiry, "
+                             "not counted in the assessment above."))
         day = datetime.fromtimestamp(now).strftime("%Y%m%d")
         items.append(FlowItem(
             "polymarket", f"pm:{cid[:14]}:{'a' if net >= 0 else 'b'}:{day}", title,
@@ -307,10 +342,14 @@ def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str
     items.sort(key=lambda i: (-{"watch": 2, "macro": 1, "other": 0}[i.tier], -i.score, -i.amount))
     notes = []
     if low_info_n:
-        notes.append(f"近 {int(p['recent_minutes'])} 分钟另有 {low_info_n} 笔（{usd(low_info_usd)}）成交价 ≥{ext * 100:.0f}% 的大单，"
-                     "属于买入近乎确定的结果，信息量低，未单独列出。")
+        notes.append(L(f"近 {int(p['recent_minutes'])} 分钟另有 {low_info_n} 笔（{usd(low_info_usd)}）成交价 ≥{ext * 100:.0f}% 的大单，"
+                       "属于买入近乎确定的结果，信息量低，未单独列出。",
+                       f"Also in the last {int(p['recent_minutes'])} minutes: {low_info_n} more large trade(s), {usd(low_info_usd)}, "
+                       f"at prices ≥{ext * 100:.0f}%; they buy a near-certain outcome, carry little information and are "
+                       "not listed separately."))
     if skipped_sport:
-        notes.append(f"已按设置跳过 {skipped_sport} 个体育 / 短周期涨跌市场。")
+        notes.append(L(f"已按设置跳过 {skipped_sport} 个体育 / 短周期涨跌市场。",
+                       f"Skipped {skipped_sport} sports / short-term up-or-down markets, as set."))
     return items[: int(p["max_items"])], notes
 
 
@@ -346,11 +385,13 @@ def scan_options(chains: dict[str, dict[str, tuple]], cfg: dict | None = None, w
                         hits.append((prem, kind, expiry, r, vol, oi, last))
         if tot["C"] + tot["P"] > 0:
             pc = tot["P"] / tot["C"] if tot["C"] else float("inf")
-            notes.append(f"{sym}：看涨 {tot['C']:,.0f} 张 / 看跌 {tot['P']:,.0f} 张，看跌看涨比 {pc:.2f}"
-                         f"（近 {len(exps)} 个到期日）")
+            notes.append(L(f"{sym}：看涨 {tot['C']:,.0f} 张 / 看跌 {tot['P']:,.0f} 张，看跌看涨比 {pc:.2f}"
+                           f"（近 {len(exps)} 个到期日）",
+                           f"{sym}: calls {tot['C']:,.0f} / puts {tot['P']:,.0f} contracts, put/call ratio {pc:.2f} "
+                           f"(nearest {len(exps)} expiries)"))
         for prem, kind, expiry, r, vol, oi, last in sorted(hits, key=lambda h: -h[0])[: int(p["per_symbol"])]:
             score = 2.0 + (1 if prem >= 5 * float(p["min_premium"]) else 0) + (1 if vol >= 10 * max(oi, 1.0) else 0)
-            name = "看涨" if kind == "C" else "看跌"
+            name = L("看涨", "call") if kind == "C" else L("看跌", "put")
             iv = _f(r.get("impliedVolatility")) * 100
             contract = r.get("contractSymbol") or f"{sym}{expiry}{kind}{_f(r.get('strike')):g}"
             items.append(FlowItem(
@@ -358,13 +399,24 @@ def scan_options(chains: dict[str, dict[str, tuple]], cfg: dict | None = None, w
                 f"{sym} {expiry} {_f(r.get('strike')):g} {name}", f"https://finance.yahoo.com/quote/{sym}/options",
                 round(score, 2), _severity(score), "watch" if watch and sym in watch else "macro",
                 [sym] if watch and sym in watch else [],
-                f"今日成交 {vol:,.0f} 张，是未平仓量（{oi:,.0f}）的 {vol / max(oi, 1.0):.1f} 倍，权利金约 {usd(prem)}",
-                [f"成交量 / 未平仓量 = {vol / max(oi, 1.0):.1f}（门槛 {float(p['vol_oi']):g}）",
-                 f"最新价 {last:,.2f}，隐含波动率 {iv:.0f}%，{'价内' if r.get('inTheMoney') else '价外'}"],
-                ["成交量远大于未平仓量，说明今天大多是新开的仓。但这份数据看不出是主动买还是主动卖："
-                 f"{name}期权放量既可能是押方向，也可能是卖出收权利金、对冲正股，或价差组合的一条腿。",
-                 "可核对：下一个交易日未平仓量是否跟着增加（增加 = 仓位留下了）；同到期日相邻行权价是否同时放量（多半是价差）；"
-                 "是否临近财报。"], prem, now or time.time()))
+                L(f"今日成交 {vol:,.0f} 张，是未平仓量（{oi:,.0f}）的 {vol / max(oi, 1.0):.1f} 倍，权利金约 {usd(prem)}",
+                  f"Traded {vol:,.0f} contracts today, {vol / max(oi, 1.0):.1f}x the open interest ({oi:,.0f}), "
+                  f"premium about {usd(prem)}"),
+                [L(f"成交量 / 未平仓量 = {vol / max(oi, 1.0):.1f}（门槛 {float(p['vol_oi']):g}）",
+                   f"Volume / open interest = {vol / max(oi, 1.0):.1f} (threshold {float(p['vol_oi']):g})"),
+                 L(f"最新价 {last:,.2f}，隐含波动率 {iv:.0f}%，{'价内' if r.get('inTheMoney') else '价外'}",
+                   f"Last price {last:,.2f}, implied volatility {iv:.0f}%, "
+                   f"{'in the money' if r.get('inTheMoney') else 'out of the money'}")],
+                [L("成交量远大于未平仓量，说明今天大多是新开的仓。但这份数据看不出是主动买还是主动卖："
+                   f"{name}期权放量既可能是押方向，也可能是卖出收权利金、对冲正股，或价差组合的一条腿。",
+                   "Volume far above open interest means most of today's trades opened new positions. But this data cannot "
+                   "tell whether they were buys or sells: heavy "
+                   f"{name} volume may be a directional bet, selling to collect premium, hedging the stock, or one leg of a spread."),
+                 L("可核对：下一个交易日未平仓量是否跟着增加（增加 = 仓位留下了）；同到期日相邻行权价是否同时放量（多半是价差）；"
+                   "是否临近财报。",
+                   "To check: whether open interest rises on the next trading day (a rise = the positions stayed); whether "
+                   "neighbouring strikes of the same expiry also saw heavy volume (usually a spread); whether earnings are near.")],
+                prem, now or time.time()))
     items.sort(key=lambda i: (-i.score, -i.amount))
     return items[: int(p["max_items"])], notes
 
@@ -390,24 +442,35 @@ def scan_futures(bars: dict, cfg: dict | None = None, now: float | None = None) 
         vr = None
         if v is not None and len(v) >= 23 and float(v.iloc[-22:-2].mean()) > 0:
             vr = float(v.iloc[-2]) / float(v.iloc[-22:-2].mean())       # last finished session
-        notes.append(f"{name}（{sym}）{float(c.iloc[-1]):,.2f}，{last:+.2f}%（{z:+.1f}σ）"
-                     + (f"，上一交易日成交量为 20 日均量的 {vr:.1f} 倍" if vr else ""))
+        notes.append(L(f"{name}（{sym}）{float(c.iloc[-1]):,.2f}，{last:+.2f}%（{z:+.1f}σ）"
+                       + (f"，上一交易日成交量为 20 日均量的 {vr:.1f} 倍" if vr else ""),
+                       f"{name} ({sym}) {float(c.iloc[-1]):,.2f}, {last:+.2f}% ({z:+.1f}σ)"
+                       + (f", last session's volume was {vr:.1f}x its 20-day average" if vr else "")))
         facts, score = [], 0.0
         if abs(z) >= float(p["z"]):
             score += 2 + (1 if abs(z) >= 3 else 0)
-            facts.append(f"单日 {last:+.2f}%，相当于近 60 个交易日波动的 {z:+.1f} 倍标准差（门槛 {float(p['z']):g}）")
+            facts.append(L(f"单日 {last:+.2f}%，相当于近 60 个交易日波动的 {z:+.1f} 倍标准差（门槛 {float(p['z']):g}）",
+                           f"Daily move {last:+.2f}%, which is {z:+.1f} standard deviations of the last 60 sessions' "
+                           f"moves (threshold {float(p['z']):g})"))
         if vr and vr >= float(p["volume_mult"]):
             score += 1.5
-            facts.append(f"上一交易日成交量是 20 日均量的 {vr:.1f} 倍（门槛 {float(p['volume_mult']):g}）")
+            facts.append(L(f"上一交易日成交量是 20 日均量的 {vr:.1f} 倍（门槛 {float(p['volume_mult']):g}）",
+                           f"Last session's volume was {vr:.1f}x its 20-day average (threshold {float(p['volume_mult']):g})"))
         if not facts:
             continue
-        reading = ["期货是全市场的风险温度计：股指期货大跌、VIX 大涨、美债期货上涨同时出现时，通常是避险情绪，高波动的科技股往往跌得更多。"
+        reading = [L("期货是全市场的风险温度计：股指期货大跌、VIX 大涨、美债期货上涨同时出现时，通常是避险情绪，高波动的科技股往往跌得更多。",
+                     "Futures are a risk thermometer for the whole market: when equity index futures fall sharply, the VIX jumps "
+                     "and Treasury futures rise together, it is usually risk aversion, and high-volatility tech stocks tend to fall more.")
                    if sym != "CL=F" and sym != "GC=F" else
-                   "商品期货的大幅波动多与地缘和通胀预期有关，对个股的影响是间接的。",
-                   "可核对：是不是有数据公布（CPI、非农、议息）或突发新闻；盘中数字是未走完的一天，收盘后再确认。"]
+                   L("商品期货的大幅波动多与地缘和通胀预期有关，对个股的影响是间接的。",
+                     "Large commodity futures moves are mostly tied to geopolitics and inflation expectations; "
+                     "the effect on individual stocks is indirect."),
+                   L("可核对：是不是有数据公布（CPI、非农、议息）或突发新闻；盘中数字是未走完的一天，收盘后再确认。",
+                     "To check: whether data was released (CPI, payrolls, a rate decision) or there was breaking news; an "
+                     "intraday figure is an unfinished day, so confirm after the close.")]
         day = f"{df.index[-1]:%Y%m%d}" if hasattr(df.index[-1], "strftime") else str(df.index[-1])
-        items.append(FlowItem("futures", f"fut:{sym}:{day}", f"{name}（{sym}）", f"https://finance.yahoo.com/quote/{quote(sym)}",
-                              round(score, 2), _severity(score), "macro", [], f"{float(c.iloc[-1]):,.2f}，{last:+.2f}%（{z:+.1f}σ）",
+        items.append(FlowItem("futures", f"fut:{sym}:{day}", L(f"{name}（{sym}）", f"{name} ({sym})"), f"https://finance.yahoo.com/quote/{quote(sym)}",
+                              round(score, 2), _severity(score), "macro", [], L(f"{float(c.iloc[-1]):,.2f}，{last:+.2f}%（{z:+.1f}σ）", f"{float(c.iloc[-1]):,.2f}, {last:+.2f}% ({z:+.1f}σ)"),
                               facts, reading, 0.0, now or time.time()))
     items.sort(key=lambda i: -i.score)
     return items, notes
@@ -426,12 +489,15 @@ def alert_items(report: FlowReport, cfg: dict | None = None) -> list[FlowItem]:
 
 
 def alert_text(i: FlowItem) -> tuple[str, str]:
-    src = {"polymarket": "Polymarket 异动", "options": "期权异动", "futures": "期货异动"}[i.source]
-    lines = [i.headline] + [f"· {f}" for f in i.facts] + ["怎么看："] + [f"· {r}" for r in i.reading]
+    src = {"polymarket": L("Polymarket 异动", "Polymarket unusual activity"),
+           "options": L("期权异动", "Unusual options activity"),
+           "futures": L("期货异动", "Unusual futures activity")}[i.source]
+    lines = [i.headline] + [f"· {f}" for f in i.facts] + [L("怎么看：", "How to read it:")] + [f"· {r}" for r in i.reading]
     if i.url:
         lines.append(i.url)
-    lines.append("这是按固定规则筛出的异常成交，不是预测，也不是买卖建议。")
-    return f"{src}：{i.title}", "\n".join(lines)
+    lines.append(L("这是按固定规则筛出的异常成交，不是预测，也不是买卖建议。",
+                   "These are unusual trades picked out by fixed rules; they are not a prediction and not a recommendation to buy or sell."))
+    return L(f"{src}：{i.title}", f"{src}: {i.title}"), "\n".join(lines)
 
 
 __all__ = ["FlowItem", "FlowReport", "AdapterError", "settings", "fetch_trades", "fetch_events", "scan_polymarket",

@@ -8,13 +8,15 @@ Windows 11 桌面股票小组件：同步自选股行情与持仓，给出**带�
 >
 > **不是投资建议。** 所有“建议”都是基于历史价格的统计参考，界面上会同时展示输入数据、推理过程和历史回测，由你自己判断。历史表现不代表未来。
 
-![widget](assets/screenshot-widget.png)
+![桌面小组件](assets/zh/widget.png)
 
-![异动扫描：Polymarket 大额下注与期权放量，每条写明触发的规则](assets/screenshot-scan.png)
+![异动扫描：Polymarket 大额下注与期权放量，每条写明触发的规则](assets/zh/scan.png)
 
-![detail](assets/screenshot-detail.png)
+![个股详情](assets/zh/detail.png)
 
-截图是程序自带的演示数据。
+![每日简报](assets/zh/briefing.png)
+
+截图里的持仓是程序自带的演示数据，行情和异动扫描是公开的市场数据。
 
 ## 快速开始
 
@@ -29,6 +31,8 @@ StockDesk.bat    :: 启动（无控制台窗口）；或双击桌面上的 “St
 - 桌面快捷方式：`powershell -ExecutionPolicy Bypass -File scripts\create_shortcut.ps1`
 - 命令行：`.venv\Scripts\python.exe -m stockdesk`；自检截图：`... -m stockdesk --screenshots <目录>`
 - 测试：`.venv\Scripts\python.exe -m pytest -q`
+
+界面有中文和英文两种，默认跟随系统语言；可以在 分析中心 → 数据源与设置 里选，或在 `data\config.yaml` 里写 `app.language: zh` / `en`，或用环境变量 `STOCKDESK_LANG`。提醒邮件用同一种语言。改后需重启。
 
 环境：Python 3.13（≥3.11 即可）、Windows 11。日志在 `data\stockdesk.log`。
 
@@ -147,7 +151,7 @@ StockDesk.bat    :: 启动（无控制台窗口）；或双击桌面上的 “St
 
 ## 已知限制
 
-1. 界面目前只有中文；桌面小组件只支持 Windows 11，不带界面的版本可在 Linux 上运行。
+1. 桌面小组件只支持 Windows 11，不带界面的版本可在 Linux 上运行。`config.default.yaml` 里的注释是中文。
 2. IBKR Flex 和 Robinhood 报告导入用真实账户跑过；TWS、Client Portal 和非官方 Robinhood 方式只用模拟对象测试过，第一次接入时请看一眼 `data\stockdesk.log`。
 3. 行情来自 Yahoo 免费数据：可能延迟约 15 分钟，无盘前盘后，偶尔限流。期权成交量是当日累计，看不出主动买卖方向。
 4. 期权、期货、加密货币持仓会被忽略。

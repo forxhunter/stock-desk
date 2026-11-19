@@ -23,6 +23,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from .. import paths, remote
 from ..config import Config
 from ..engine import Engine, Snapshot
+from ..i18n import L
 from . import theme as T
 from . import win11
 from .detail import DetailWindow
@@ -217,12 +218,14 @@ class Worker(QObject):
 class PlanDialog(QDialog):
     def __init__(self, view, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"{view.symbol} · 我的计划")
+        self.setWindowTitle(L(f"{view.symbol} · 我的计划", f"{view.symbol} · My plan"))
         self.setStyleSheet(T.WINDOW_QSS)
         self.setMinimumWidth(380)
         lay = QVBoxLayout(self)
-        tip = QLabel("写下你自己的退出条件。留 0 表示不设；不设时小组件用 ATR 自动估算参考位。\n"
-                     "一旦设定，跌破止损仍持有、或仓位超过上限时，“行为提醒”会提示你。")
+        tip = QLabel(L("写下你自己的退出条件。留 0 表示不设；不设时小组件用 ATR 自动估算参考位。\n"
+                     "一旦设定，跌破止损仍持有、或仓位超过上限时，“行为提醒”会提示你。",
+                     "Write down your own exit conditions. Leave 0 for none; without them the widget estimates reference levels from ATR.\n"
+                     "Once set, \"Behaviour alerts\" will flag it if you still hold below your stop or the position exceeds the cap."))
         tip.setObjectName("hint")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -231,22 +234,25 @@ class PlanDialog(QDialog):
         for w, val in ((self.stop, view.plan.get("stop")), (self.target, view.plan.get("target"))):
             w.setRange(0, 1e7)
             w.setDecimals(2)
-            w.setSpecialValueText("不设")
+            w.setSpecialValueText(L("不设", "None"))
             w.setValue(float(val or 0))
         self.max_pct.setRange(0, 100)
         self.max_pct.setDecimals(1)
         self.max_pct.setSuffix(" %")
-        self.max_pct.setSpecialValueText("不设（用默认上限）")
+        self.max_pct.setSpecialValueText(L("不设（用默认上限）", "None (use default cap)"))
         self.max_pct.setValue(float(view.plan.get("max_pct") or 0))
-        form.addRow("止损价", self.stop)
-        form.addRow("目标价", self.target)
-        form.addRow("最大仓位占比", self.max_pct)
+        form.addRow(L("止损价", "Stop price"), self.stop)
+        form.addRow(L("目标价", "Target price"), self.target)
+        form.addRow(L("最大仓位占比", "Max position share"), self.max_pct)
         lay.addLayout(form)
         a = view.analysis
         if a and a.ok and a.levels:
-            ref = QLabel(f"参考：现价 {T.price(view.price)}，ATR(14) {a.levels.atr:.2f}；"
-                         f"ATR 止损 {T.price(a.levels.stop)} / 止盈 {T.price(a.levels.target)}"
-                         f"（以{'成本' if a.levels.basis == 'cost' else '现价'}为锚）")
+            ref = QLabel(L(f"参考：现价 {T.price(view.price)}，ATR(14) {a.levels.atr:.2f}；"
+                           f"ATR 止损 {T.price(a.levels.stop)} / 止盈 {T.price(a.levels.target)}"
+                           f"（以{'成本' if a.levels.basis == 'cost' else '现价'}为锚）",
+                           f"Reference: price {T.price(view.price)}, ATR(14) {a.levels.atr:.2f}; "
+                           f"ATR stop {T.price(a.levels.stop)} / take-profit {T.price(a.levels.target)} "
+                           f"(anchored on {'cost' if a.levels.basis == 'cost' else 'price'})"))
             ref.setObjectName("hint")
             ref.setWordWrap(True)
             lay.addWidget(ref)
@@ -276,7 +282,7 @@ class Toast(QLabel):
                            f" border-radius:8px; padding:12px 14px; font-size:10pt; }}")
         import html as _html
         self.setText(f"<b>{_html.escape(title)}</b><br><span style='color:{T.SUB};'>{_html.escape(body)}</span>"
-                     f"<br><span style='color:{T.DIM}; font-size:8.5pt;'>Stock Desk · 点击查看</span>")
+                     f"<br><span style='color:{T.DIM}; font-size:8.5pt;'>" + L("Stock Desk · 点击查看", "Stock Desk · click to view") + "</span>")
 
     def popup(self, screen, seconds: int = 20) -> None:
         self.adjustSize()
@@ -299,7 +305,7 @@ class HalfYearPlanDialog(QDialog):
         self.follow_opt = follow_opt
         from datetime import date, timedelta
         from PySide6.QtCore import QDate
-        self.setWindowTitle(f"{view.symbol} · 我的计划（建仓 / 减仓）")
+        self.setWindowTitle(L(f"{view.symbol} · 我的计划（建仓 / 减仓）", f"{view.symbol} · My plan (build / trim)"))
         self.setStyleSheet(T.WINDOW_QSS)
         self.setMinimumWidth(560)
         # the form can be taller than a small screen: scroll the content, keep the buttons visible
@@ -312,8 +318,11 @@ class HalfYearPlanDialog(QDialog):
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
         lay = QVBoxLayout(content)
-        tip = QLabel("这里的每个数字都是<b>你自己的决定</b>：程序不会替你填，也不会下单，只会每天对照并在简报和图上显示。"
-                     "留 0 / 留空表示暂时不定。")
+        tip = QLabel(L("这里的每个数字都是<b>你自己的决定</b>：程序不会替你填，也不会下单，只会每天对照并在简报和图上显示。"
+                     "留 0 / 留空表示暂时不定。",
+                     "Every number here is <b>your own decision</b>: the program does not fill it in and places no orders; "
+                     "it only compares against it daily and shows it in the briefing and on the chart. "
+                     "Leave 0 / blank if undecided."))
         tip.setObjectName("hint")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -324,7 +333,8 @@ class HalfYearPlanDialog(QDialog):
         self.follow_hint.setObjectName("hint")
         self.follow_hint.setWordWrap(True)
         if follow_opt:
-            self.follow.setText(f"价位按 {follow_opt['name']}（{follow_opt['symbol']}，{follow_opt['ccy']}）的股价填写和判断")
+            self.follow.setText(L(f"价位按 {follow_opt['name']}（{follow_opt['symbol']}，{follow_opt['ccy']}）的股价填写和判断",
+                                 f"Enter and judge price levels on the {follow_opt['name']} share price ({follow_opt['symbol']}, {follow_opt['ccy']})"))
             self.follow.setChecked(str(plan.get("follow") or "").upper() == follow_opt["symbol"].upper())
             self.follow.toggled.connect(self._relabel)
             form.addRow(self.follow)
@@ -333,27 +343,27 @@ class HalfYearPlanDialog(QDialog):
         self.target.setRange(0, 100)
         self.target.setDecimals(1)
         self.target.setSuffix(" %")
-        self.target.setSpecialValueText("未定")
+        self.target.setSpecialValueText(L("未定", "Undecided"))
         self.target.setValue(float(plan.get("target_weight_pct") or 0))
         self.exit_below = QDoubleSpinBox()
         self.exit_below.setRange(0, 1e9)
         self.exit_below.setDecimals(2)
-        self.exit_below.setSpecialValueText("未定")
+        self.exit_below.setSpecialValueText(L("未定", "Undecided"))
         self.exit_below.setValue(float(plan.get("exit_below") or 0))
         self.levels = QLineEdit(", ".join(f"{float(x):.10g}" for x in (plan.get("reduce_above") or [])))
-        self.levels.setPlaceholderText("用逗号分隔，例如 900, 1000, 1100（数字里不要写千分位逗号）")
+        self.levels.setPlaceholderText(L("用逗号分隔，例如 900, 1000, 1100（数字里不要写千分位逗号）", "Comma-separated, e.g. 900, 1000, 1100 (no thousands separators in numbers)"))
         self.buys = QLineEdit(", ".join(f"{float(x):.10g}" for x in (plan.get("buy_below") or [])))
-        self.buys.setPlaceholderText("想分批买入的价位，用逗号分隔；到价提醒（数字里不要写千分位逗号）")
+        self.buys.setPlaceholderText(L("想分批买入的价位，用逗号分隔；到价提醒（数字里不要写千分位逗号）", "Price levels to buy in stages, comma-separated; alerts when reached (no thousands separators in numbers)"))
         self.target_price = QDoubleSpinBox()
         self.target_price.setRange(0, 1e9)
         self.target_price.setDecimals(2)
-        self.target_price.setSpecialValueText("未定")
+        self.target_price.setSpecialValueText(L("未定", "Undecided"))
         self.target_price.setValue(float(plan.get("target_price") or 0))
         self.max_weight = QDoubleSpinBox()
         self.max_weight.setRange(0, 100)
         self.max_weight.setDecimals(1)
         self.max_weight.setSuffix(" %")
-        self.max_weight.setSpecialValueText("未定")
+        self.max_weight.setSpecialValueText(L("未定", "Undecided"))
         self.max_weight.setValue(float(plan.get("max_weight_pct") or 0))
         end = plan.get("end")
         try:
@@ -365,31 +375,31 @@ class HalfYearPlanDialog(QDialog):
         self.end.setDisplayFormat("yyyy-MM-dd")
         self.review = QSpinBox()
         self.review.setRange(7, 180)
-        self.review.setSuffix(" 天")
+        self.review.setSuffix(L(" 天", " days"))
         self.review.setValue(int(plan.get("review_days") or 30))
-        self.no_add = QCheckBox("计划期间不再加仓（有买入时简报会标出）")
+        self.no_add = QCheckBox(L("计划期间不再加仓（有买入时简报会标出）", "No adding during the plan (the briefing flags any buy)"))
         self.no_add.setChecked(bool(plan.get("no_add", not (plan.get("buy_below") or not view.qty))))
         self.notes = QLineEdit(str(plan.get("notes") or ""))
-        self.notes.setPlaceholderText("为什么持有；什么情况下认错")
-        form.addRow(QLabel("<b>建仓</b>（想买入时填）"))
+        self.notes.setPlaceholderText(L("为什么持有；什么情况下认错", "Why you hold; when you would admit you were wrong"))
+        form.addRow(QLabel(L("<b>建仓</b>（想买入时填）", "<b>Build a position</b> (fill in if you want to buy)")))
         self._labs = {k: QLabel() for k in ("buy", "target", "reduce", "exit")}
         form.addRow(self._labs["buy"], self.buys)
-        form.addRow("这只股票的仓位上限", self.max_weight)
+        form.addRow(L("这只股票的仓位上限", "Position cap for this stock"), self.max_weight)
         form.addRow(self._labs["target"], self.target_price)
-        form.addRow(QLabel("<b>减仓</b>（想降低仓位时填）"))
-        form.addRow("结束日前想降到占组合", self.target)
+        form.addRow(QLabel(L("<b>减仓</b>（想降低仓位时填）", "<b>Trim</b> (fill in if you want to reduce)")))
+        form.addRow(L("结束日前想降到占组合", "Reduce to this share of portfolio by end date"), self.target)
         form.addRow(self._labs["reduce"], self.levels)
-        form.addRow(QLabel("<b>通用</b>"))
+        form.addRow(QLabel(L("<b>通用</b>", "<b>General</b>")))
         form.addRow(self._labs["exit"], self.exit_below)
         self._relabel()
-        form.addRow("计划结束日", self.end)
-        form.addRow("复查间隔", self.review)
+        form.addRow(L("计划结束日", "Plan end date"), self.end)
+        form.addRow(L("复查间隔", "Review interval"), self.review)
         form.addRow("", self.no_add)
-        form.addRow("写给自己的话", self.notes)
+        form.addRow(L("写给自己的话", "Note to self"), self.notes)
         lay.addLayout(form)
         if refs:
             rows = "".join(f"<tr><td style='padding:2px 14px 2px 0; color:{T.SUB};'>{k}</td><td>{v}</td></tr>" for k, v in refs)
-            ref = QLabel("<b>可以对照的现有数据</b>（按固定规则算出，不是建议填的值）<table>" + rows + "</table>")
+            ref = QLabel(L("<b>可以对照的现有数据</b>（按固定规则算出，不是建议填的值）", "<b>Existing data to compare against</b> (computed by fixed rules; not suggested values)") + "<table>" + rows + "</table>")
             ref.setTextFormat(Qt.RichText)
             ref.setObjectName("hint")
             ref.setWordWrap(True)
@@ -407,15 +417,19 @@ class HalfYearPlanDialog(QDialog):
         """Show which currency the price fields are in (the followed stock's when the box is ticked)."""
         on = bool(self.follow_opt) and self.follow.isChecked()
         cur = self.follow_opt["ccy"] if on else self.cur
-        for key, text in (("buy", "分批买入价位"), ("target", "目标价"), ("reduce", "分批减仓价位"), ("exit", "底线价")):
-            self._labs[key].setText(f"{text}（{cur}）")
+        for key, text in (("buy", L("分批买入价位", "Buy levels")), ("target", L("目标价", "Target price")), ("reduce", L("分批减仓价位", "Trim levels")), ("exit", L("底线价", "Floor price"))):
+            self._labs[key].setText(L(f"{text}（{cur}）", f"{text} ({cur})"))
         if self.follow_opt:
             o = self.follow_opt
-            conv = f"按现在的汇率，1,000,000 {o['ccy']} ≈ {1e6 * o['to_local']:,.0f} {self.cur}。" if o.get("to_local") else ""
+            conv = L(f"按现在的汇率，1,000,000 {o['ccy']} ≈ {1e6 * o['to_local']:,.0f} {self.cur}。",
+                     f"At the current rate, 1,000,000 {o['ccy']} ≈ {1e6 * o['to_local']:,.0f} {self.cur}. ") if o.get("to_local") else ""
             self.follow_hint.setText(
-                (f"已勾选：下面四个价位都是 {o['name']} 的 {o['ccy']} 股价，提醒也按它的行情触发；"
-                 f"图上换算成 {self.cur} 画在 {self.windowTitle().split(' ')[0]} 的 K 线上。" if on else
-                 f"未勾选：价位按这只股票自己的 {self.cur} 价格。") + conv + "切换时已填的数字不会自动换算，请自己改。")
+                (L(f"已勾选：下面四个价位都是 {o['name']} 的 {o['ccy']} 股价，提醒也按它的行情触发；"
+                   f"图上换算成 {self.cur} 画在 {self.windowTitle().split(' ')[0]} 的 K 线上。",
+                   f"Ticked: the four price levels below are {o['name']} share prices in {o['ccy']}, and alerts trigger on its quote; "
+                   f"on the chart they are converted to {self.cur} and drawn on the {self.windowTitle().split(' ')[0]} candles. ") if on else
+                 L(f"未勾选：价位按这只股票自己的 {self.cur} 价格。", f"Not ticked: levels are in this stock's own {self.cur} price. ")) + conv
+                + L("切换时已填的数字不会自动换算，请自己改。", "Numbers already entered are not converted when you switch; edit them yourself."))
 
     @staticmethod
     def _levels(text: str) -> list[float]:
@@ -530,34 +544,34 @@ class App(QObject):
     def _build_tray(self) -> None:
         self.menu = QMenu()
         self.menu.setStyleSheet(T.MENU_QSS)
-        self.act_show = self.menu.addAction("显示 / 隐藏小组件", self.toggle_widget)
-        self.menu.addAction("立即刷新", lambda: self.sig_refresh.emit(True))
-        self.menu.addAction("添加自选股…", self.add_dialog)
+        self.act_show = self.menu.addAction(L("显示 / 隐藏小组件", "Show / hide widget"), self.toggle_widget)
+        self.menu.addAction(L("立即刷新", "Refresh now"), lambda: self.sig_refresh.emit(True))
+        self.menu.addAction(L("添加自选股…", "Add to watchlist…"), self.add_dialog)
         self.menu.addSeparator()
-        self.menu.addAction("每日简报…", lambda: self.open_hub("briefing"))
-        self.menu.addAction("组合优化…", lambda: self.open_hub("portfolio"))
-        self.menu.addAction("行为提醒…", lambda: self.open_hub("alerts"))
-        self.menu.addAction("交易前检查…", lambda: self.open_hub("pretrade"))
-        self.menu.addAction("资讯 · 预测市场…", lambda: self.open_hub("research"))
-        self.menu.addAction("数据源与设置…", lambda: self.open_hub("sources"))
+        self.menu.addAction(L("每日简报…", "Daily briefing…"), lambda: self.open_hub("briefing"))
+        self.menu.addAction(L("组合优化…", "Portfolio optimisation…"), lambda: self.open_hub("portfolio"))
+        self.menu.addAction(L("行为提醒…", "Behaviour alerts…"), lambda: self.open_hub("alerts"))
+        self.menu.addAction(L("交易前检查…", "Pre-trade check…"), lambda: self.open_hub("pretrade"))
+        self.menu.addAction(L("资讯 · 预测市场…", "News · prediction markets…"), lambda: self.open_hub("research"))
+        self.menu.addAction(L("数据源与设置…", "Sources && settings…"), lambda: self.open_hub("sources"))
         self.menu.addSeparator()
-        self.act_private = QAction("隐藏关键数据（持仓 / 金额 / 盈亏）", self.menu, checkable=True, checked=T.PRIVATE)
+        self.act_private = QAction(L("隐藏关键数据（持仓 / 金额 / 盈亏）", "Hide key data (positions / amounts / P&L)"), self.menu, checkable=True, checked=T.PRIVATE)
         self.act_private.toggled.connect(self.set_private)
         self.menu.addAction(self.act_private)
-        self.act_top = QAction("窗口置顶", self.menu, checkable=True, checked=self.widget.on_top)
+        self.act_top = QAction(L("窗口置顶", "Always on top"), self.menu, checkable=True, checked=self.widget.on_top)
         self.act_top.toggled.connect(self._set_on_top)
         self.menu.addAction(self.act_top)
-        self.menu.addAction("编辑半年计划…", self.edit_plans)
-        self.menu.addAction("编辑 watchlist.yaml", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.WATCHLIST))))
+        self.menu.addAction(L("编辑半年计划…", "Edit half-year plans…"), self.edit_plans)
+        self.menu.addAction(L("编辑 watchlist.yaml", "Edit watchlist.yaml"), lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.WATCHLIST))))
         self.menu.addSeparator()
-        self.menu.addAction("退出", self.quit)
+        self.menu.addAction(L("退出", "Quit"), self.quit)
         # The tray icon is optional (app.tray_icon). Without it Stock Desk lives inside Pipeline Hub:
         # launching it again shows the widget, and right-clicking the widget opens this same menu.
         self.tray = None
         if not self.cfg.get("app.tray_icon", False):
             return
         self.tray = QSystemTrayIcon(app_icon())
-        self.tray.setToolTip("Stock Desk（只读）")
+        self.tray.setToolTip(L("Stock Desk（只读）", "Stock Desk (read-only)"))
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(lambda r: self.toggle_widget() if r == QSystemTrayIcon.Trigger else None)
         self.tray.messageClicked.connect(lambda: self.open_hub("alerts"))
@@ -629,7 +643,7 @@ class App(QObject):
         if v is None:
             return
         if T.PRIVATE:
-            QMessageBox.information(self.widget, "隐私模式", "隐私模式开启时不显示计划。先点眼睛图标关闭隐私模式。")
+            QMessageBox.information(self.widget, L("隐私模式", "Privacy mode"), L("隐私模式开启时不显示计划。先点眼睛图标关闭隐私模式。", "Plans are not shown while privacy mode is on. Click the eye icon to turn it off first."))
             return
         plan = plans.load().get(symbol) or {}
         cap = float(self.cfg.get("quant.max_position_pct", 25.0))
@@ -641,7 +655,7 @@ class App(QObject):
             follow_opt = {"symbol": ref.ref_symbol, "name": ref.name, "ccy": ref.ref_currency, "to_local": to_local}
             fv = self.snap.get(ref.ref_symbol)
             if fv is not None:
-                refs = refs + [(f"<b>{ref.name}（{ref.ref_symbol}，{ref.ref_currency}）</b>", "")] + \
+                refs = refs + [(L(f"<b>{ref.name}（{ref.ref_symbol}，{ref.ref_currency}）</b>", f"<b>{ref.name} ({ref.ref_symbol}, {ref.ref_currency})</b>"), "")] + \
                     plans.reference_levels(fv, cap, market_only=True)
         dlg = HalfYearPlanDialog(v, plan, refs, self.widget, follow_opt)
         if dlg.exec() == QDialog.Accepted:
@@ -683,18 +697,19 @@ class App(QObject):
         if self.tray is None:          # no tray icon: show our own small pop-up for new alerts
             fresh = [a for a in snap.new_alerts if a.severity in ("warn", "high")]
             if fresh and self.shots_dir is None:
-                title = fresh[0].title if len(fresh) == 1 else f"{len(fresh)} 条新提醒"
-                body = fresh[0].body.split("\n")[0][:160] if len(fresh) == 1 else "；".join(a.title for a in fresh[:4])
+                title = fresh[0].title if len(fresh) == 1 else L(f"{len(fresh)} 条新提醒", f"{len(fresh)} new alerts")
+                body = fresh[0].body.split("\n")[0][:160] if len(fresh) == 1 else L("；", "; ").join(a.title for a in fresh[:4])
                 private = T.PRIVATE and any(a.kind not in ("bottoming", "flow") for a in fresh)
-                self._toast = Toast(title, "隐私模式：内容已隐藏，点击查看。" if private else body)
+                self._toast = Toast(title, L("隐私模式：内容已隐藏，点击查看。", "Privacy mode: content hidden, click to view.") if private else body)
                 self._toast.clicked.connect(lambda k=fresh[0].kind: self.open_hub("flow" if k == "flow" and len(fresh) == 1 else "alerts"))
                 self._toast.popup(self.widget.screen())
             return
-        self.tray.setToolTip(f"Stock Desk（只读）\n市值 {T.money(snap.total_value)}　今日 {T.money(snap.day_pnl, True)}")
+        self.tray.setToolTip(L(f"Stock Desk（只读）\n市值 {T.money(snap.total_value)}　今日 {T.money(snap.day_pnl, True)}",
+                              f"Stock Desk (read-only)\nValue {T.money(snap.total_value)}  Today {T.money(snap.day_pnl, True)}"))
         fresh = [a for a in snap.new_alerts if a.severity in ("warn", "high")]
         if fresh and self.shots_dir is None:
-            title = fresh[0].title if len(fresh) == 1 else f"{len(fresh)} 条新的行为提醒"
-            body = fresh[0].body.split("\n")[0][:180] if len(fresh) == 1 else "；".join(a.title for a in fresh[:4])
+            title = fresh[0].title if len(fresh) == 1 else L(f"{len(fresh)} 条新的行为提醒", f"{len(fresh)} new behaviour alerts")
+            body = fresh[0].body.split("\n")[0][:180] if len(fresh) == 1 else L("；", "; ").join(a.title for a in fresh[:4])
             self.tray.showMessage(title, body, QSystemTrayIcon.Warning, 12000)
 
     def _on_cycle(self) -> None:
@@ -746,14 +761,14 @@ class App(QObject):
         self.sig_reload.emit()
 
     def _ask_code(self, prompt: str) -> None:
-        text, ok = QInputDialog.getText(self.widget, "Robinhood 验证", prompt or "请输入验证码：")
+        text, ok = QInputDialog.getText(self.widget, L("Robinhood 验证", "Robinhood verification"), prompt or L("请输入验证码：", "Enter the verification code:"))
         self.worker.provide_code(text if ok else "")
 
     def add_dialog(self) -> None:
         dlg = QInputDialog(self.widget)
         dlg.setStyleSheet(T.WINDOW_QSS)
-        dlg.setWindowTitle("添加自选股")
-        dlg.setLabelText("股票代码（美股，如 NVDA、BRK-B）：")
+        dlg.setWindowTitle(L("添加自选股", "Add to watchlist"))
+        dlg.setLabelText(L("股票代码（美股，如 NVDA、BRK-B）：", "Ticker (US stocks, e.g. NVDA, BRK-B):"))
         if dlg.exec() == QDialog.Accepted and dlg.textValue().strip():
             self.sig_add.emit(dlg.textValue())
 
@@ -763,15 +778,15 @@ class App(QObject):
             return
         m = QMenu()
         m.setStyleSheet(T.MENU_QSS)
-        m.addAction("查看图表与依据", lambda: self.open_detail(symbol))
-        m.addAction("设置我的止损 / 目标 / 仓位上限…", lambda: self.plan_dialog(symbol))
-        m.addAction("编辑我的计划（建仓 / 减仓）…", lambda: self.half_year_plan_dialog(symbol))
-        m.addAction("交易前检查…", lambda: self._ensure_hub().prefill_pretrade(symbol))
+        m.addAction(L("查看图表与依据", "View chart and rationale"), lambda: self.open_detail(symbol))
+        m.addAction(L("设置我的止损 / 目标 / 仓位上限…", "Set my stop / target / position cap…"), lambda: self.plan_dialog(symbol))
+        m.addAction(L("编辑我的计划（建仓 / 减仓）…", "Edit my plan (build / trim)…"), lambda: self.half_year_plan_dialog(symbol))
+        m.addAction(L("交易前检查…", "Pre-trade check…"), lambda: self._ensure_hub().prefill_pretrade(symbol))
         m.addSeparator()
-        rm = m.addAction("移出自选", lambda: self.sig_remove.emit(symbol))
+        rm = m.addAction(L("移出自选", "Remove from watchlist"), lambda: self.sig_remove.emit(symbol))
         if v.auto:
             rm.setEnabled(False)
-            rm.setText("移出自选（券商持仓，自动显示）")
+            rm.setText(L("移出自选（券商持仓，自动显示）", "Remove from watchlist (broker position, shown automatically)"))
         m.exec(pos)
 
     def plan_dialog(self, symbol: str) -> None:
@@ -799,10 +814,19 @@ class App(QObject):
         steps = []
 
         def grab_widget(name):
-            scr = self.widget.screen()
-            g = self.widget.frameGeometry()
-            scr.grabWindow(0, g.x() - scr.geometry().x() - 30, g.y() - scr.geometry().y() - 20,
-                           g.width() + 60, g.height() + 40).save(str(out / name))
+            pm = self.widget.grab()               # the widget only: never whatever else is on the screen
+            dpr = pm.devicePixelRatio()
+            w, h = int(pm.width() / dpr), int(pm.height() / dpr)
+            canvas = QPixmap(int((w + 60) * dpr), int((h + 40) * dpr))
+            canvas.setDevicePixelRatio(dpr)
+            p = QPainter(canvas)
+            grad = QLinearGradient(0, 0, w + 60, h + 40)
+            grad.setColorAt(0.0, QColor("#1b2233"))
+            grad.setColorAt(1.0, QColor("#0d1017"))
+            p.fillRect(0, 0, w + 60, h + 40, QBrush(grad))
+            p.drawPixmap(30, 20, pm)
+            p.end()
+            canvas.save(str(out / name))
 
         steps.append(lambda: grab_widget("widget.png"))
         sym = self.snap.tickers[0].symbol if self.snap and self.snap.tickers else None
@@ -864,7 +888,7 @@ def main(argv: list[str] | None = None) -> int:
             sock.waitForBytesWritten(500)
             sock.disconnectFromServer()
             return 0
-        QMessageBox.information(None, "Stock Desk", "Stock Desk 已经在运行。")
+        QMessageBox.information(None, "Stock Desk", L("Stock Desk 已经在运行。", "Stock Desk is already running."))
         return 0
     app = App(qapp, Path(args.screenshots) if args.screenshots else None)
     code = qapp.exec()

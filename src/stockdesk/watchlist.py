@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from . import paths
+from .i18n import L
 from .models import Position
 
 _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,14}$")
@@ -79,7 +80,8 @@ class Watchlist:
                 max_pct=_num(entry.get("max_pct")), note=str(entry.get("note", "") or "")))
 
     def save(self) -> None:
-        header = ("# Stock Desk 自选股（本文件不进 git）。字段说明见 watchlist.sample.yaml。\n")
+        header = L("# Stock Desk 自选股（本文件不进 git）。字段说明见 watchlist.sample.yaml。\n",
+                   "# Stock Desk watchlist (this file is not committed to git). Fields are described in watchlist.sample.yaml.\n")
         body = yaml.safe_dump({"tickers": [i.to_dict() for i in self.items if not i.auto]},
                               allow_unicode=True, sort_keys=False)
         self.path.write_text(header + body, encoding="utf-8")

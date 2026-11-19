@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from ..i18n import L
+
 
 @dataclass
 class Levels:
@@ -61,18 +63,20 @@ def kelly_from_trades(trade_returns: list[float], fraction: float = 0.25, cap: f
     wins = [t for t in trade_returns if t > 0]
     losses = [-t for t in trade_returns if t <= 0]
     if n == 0:
-        return Kelly(0.0, 0.0, None, None, 0, "没有历史交易样本")
+        return Kelly(0.0, 0.0, None, None, 0, L("没有历史交易样本", "No historical trades"))
     w = len(wins) / n
     if not losses or sum(losses) == 0:
-        return Kelly(0.0, 0.0, w, None, n, "历史上没有亏损交易，无法估计盈亏比（样本偏差）")
+        return Kelly(0.0, 0.0, w, None, n, L("历史上没有亏损交易，无法估计盈亏比（样本偏差）",
+                                                      "No losing trades in history, so the payoff ratio cannot be estimated (sample bias)"))
     if not wins:
-        return Kelly(-1.0, 0.0, w, 0.0, n, "历史上没有盈利交易")
+        return Kelly(-1.0, 0.0, w, 0.0, n, L("历史上没有盈利交易", "No winning trades in history"))
     payoff = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
     full = w - (1 - w) / payoff
     if n < min_trades:
-        return Kelly(full, 0.0, w, payoff, n, f"样本只有 {n} 笔（<{min_trades}），凯利仓位按 0 处理")
+        return Kelly(full, 0.0, w, payoff, n, L(f"样本只有 {n} 笔（<{min_trades}），凯利仓位按 0 处理",
+                                                           f"Only {n} trades (<{min_trades}); Kelly position treated as 0"))
     return Kelly(full, max(0.0, min(cap, full * fraction)), w, payoff, n,
-                 "期望为负，凯利仓位为 0" if full <= 0 else "")
+                 L("期望为负，凯利仓位为 0", "Negative expectancy; Kelly position is 0") if full <= 0 else "")
 
 
 @dataclass
@@ -96,9 +100,12 @@ def concentration(values: dict[str, float], max_pct: float = 25.0, top3_pct: flo
     c = Concentration(w, ordered[0][0], ordered[0][1], sum(x for _, x in ordered[:3]), hhi, 1.0 / hhi)
     for sym, x in ordered:
         if x * 100 > max_pct + 1e-9:
-            c.warnings.append(f"{sym} 占组合 {x*100:.1f}%，超过单只上限 {max_pct:.0f}%。")
+            c.warnings.append(L(f"{sym} 占组合 {x*100:.1f}%，超过单只上限 {max_pct:.0f}%。",
+                                f"{sym} is {x*100:.1f}% of the portfolio, above the per-stock cap of {max_pct:.0f}%."))
     if len(ordered) > 3 and c.top3 * 100 > top3_pct + 1e-9:
-        c.warnings.append(f"前三大持仓合计 {c.top3*100:.1f}%，超过 {top3_pct:.0f}%。")
+        c.warnings.append(L(f"前三大持仓合计 {c.top3*100:.1f}%，超过 {top3_pct:.0f}%。",
+                            f"The top three holdings total {c.top3*100:.1f}%, above {top3_pct:.0f}%."))
     if len(ordered) >= 3 and c.effective_n < 3:
-        c.warnings.append(f"有效分散度只相当于 {c.effective_n:.1f} 只等权股票。")
+        c.warnings.append(L(f"有效分散度只相当于 {c.effective_n:.1f} 只等权股票。",
+                            f"Effective diversification is only equivalent to {c.effective_n:.1f} equal-weight stocks."))
     return c

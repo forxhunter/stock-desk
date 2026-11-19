@@ -14,6 +14,7 @@ from typing import Callable
 
 import pandas as pd
 
+from ..i18n import L
 from ..models import BrokerData, MarketOdds, NewsItem
 
 USER_AGENT = "StockDesk/0.1 (personal desktop reader)"
@@ -85,7 +86,7 @@ def http_get(url: str, headers: dict | None = None, timeout: float = 15.0,
     if insecure_localhost:
         host = urllib.request.urlparse(url).hostname or ""
         if host not in ("localhost", "127.0.0.1", "::1"):
-            raise AdapterError("只允许对本机地址关闭证书校验")
+            raise AdapterError(L("只允许对本机地址关闭证书校验", "Certificate checks may only be turned off for local addresses"))
         ctx = ssl._create_unverified_context()  # the local IBKR gateway uses a self-signed cert
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
@@ -94,11 +95,11 @@ def http_get(url: str, headers: dict | None = None, timeout: float = 15.0,
         if e.code == 304:
             return 304, dict(e.headers.items()), b""
         if e.code == 429:
-            raise RateLimited("HTTP 429：请求过于频繁") from None
+            raise RateLimited(L("HTTP 429：请求过于频繁", "HTTP 429: too many requests")) from None
         raise AdapterError(f"HTTP {e.code}") from None
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
         reason = getattr(e, "reason", e)
-        raise AdapterUnavailable(f"网络不可用：{type(reason).__name__}") from None
+        raise AdapterUnavailable(L(f"网络不可用：{type(reason).__name__}", f"Network unavailable: {type(reason).__name__}")) from None
 
 
 def get_json(getter: HttpGet, url: str, **kw):
@@ -108,4 +109,4 @@ def get_json(getter: HttpGet, url: str, **kw):
     try:
         return json.loads(body.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        raise AdapterError("返回内容不是 JSON") from None
+        raise AdapterError(L("返回内容不是 JSON", "The response is not JSON")) from None

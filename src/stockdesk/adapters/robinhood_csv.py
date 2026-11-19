@@ -20,6 +20,7 @@ from xml.etree import ElementTree as ET
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from ..i18n import L
 from ..models import BrokerData, Position, Trade
 from .base import AdapterUnavailable, BrokerAdapter
 
@@ -180,17 +181,20 @@ def coverage_notes(trades: list[Trade]) -> list[str]:
         return []
     first = datetime.fromtimestamp(trades[0].ts, _NY).strftime("%Y-%m-%d")
     last = datetime.fromtimestamp(trades[-1].ts, _NY).strftime("%Y-%m-%d")
-    out = [f"成交记录覆盖 {first} ~ {last}"]
+    out = [L(f"成交记录覆盖 {first} ~ {last}", f"Trades cover {first} ~ {last}")]
     bad = oversold_symbols(trades)
     if bad:
-        out.append(f"报告不完整：{len(bad)} 只股票卖出的数量多于报告里的买入（更早的买入不在报告内），"
-                   "重建出的 Robinhood 持仓和成本不可靠。请导出从开户日开始的报告再导入")
+        out.append(L(f"报告不完整：{len(bad)} 只股票卖出的数量多于报告里的买入（更早的买入不在报告内），"
+                     "重建出的 Robinhood 持仓和成本不可靠。请导出从开户日开始的报告再导入",
+                     f"Incomplete report: for {len(bad)} stock(s) more shares were sold than bought in the report "
+                     "(earlier purchases are not in it), so the rebuilt Robinhood positions and cost are unreliable. "
+                     "Export a report starting from the account opening date and import again"))
     return out
 
 
 class RobinhoodCsvAdapter(BrokerAdapter):
     name = "robinhood_csv"
-    label = "Robinhood (官方报告导出)"
+    label = L("Robinhood (官方报告导出)", "Robinhood (official report export)")
     notes: list[str] = []
     official = True
 
@@ -205,7 +209,7 @@ class RobinhoodCsvAdapter(BrokerAdapter):
     def fetch(self) -> BrokerData:
         files = self.files()
         if not files:
-            raise AdapterUnavailable("没有找到 Robinhood 活动报告（CSV / XLSX）")
+            raise AdapterUnavailable(L("没有找到 Robinhood 活动报告（CSV / XLSX）", "No Robinhood activity report (CSV / XLSX) found"))
         by_id: dict[str, Trade] = {}
         splits: set[tuple[float, str, float]] = set()
         for f in files:

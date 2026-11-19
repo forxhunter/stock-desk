@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
+from ..i18n import L
 from ..models import BrokerData, Position, Trade
 from .base import AdapterError, AdapterUnavailable, BrokerAdapter
 
@@ -43,18 +44,20 @@ class IbkrTwsAdapter(BrokerAdapter):
             try:
                 from ib_async import IB
             except ImportError as e:  # pragma: no cover
-                raise AdapterUnavailable("未安装 ib_async") from e
+                raise AdapterUnavailable(L("未安装 ib_async", "ib_async is not installed")) from e
             ib = IB()
         try:
             try:
                 await ib.connectAsync(self.host, self.port, clientId=self.client_id,
                                       timeout=self.timeout, readonly=True)
             except (ConnectionRefusedError, asyncio.TimeoutError, TimeoutError, OSError) as e:
-                raise AdapterUnavailable(
+                raise AdapterUnavailable(L(
                     f"连不上 TWS / IB Gateway（{self.host}:{self.port}）。请确认它已启动并登录，"
-                    f"且已在 API 设置里启用 Socket 客户端。[{type(e).__name__}]") from None
+                    f"且已在 API 设置里启用 Socket 客户端。[{type(e).__name__}]",
+                    f"Cannot reach TWS / IB Gateway ({self.host}:{self.port}). Make sure it is running and "
+                    f"signed in, and that the socket client is enabled in the API settings. [{type(e).__name__}]")) from None
             except Exception as e:
-                raise AdapterError(f"IBKR 连接失败：{type(e).__name__}") from None
+                raise AdapterError(L(f"IBKR 连接失败：{type(e).__name__}", f"IBKR connection failed: {type(e).__name__}")) from None
 
             data = BrokerData()
             for p in ib.positions():

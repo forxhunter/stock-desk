@@ -9,6 +9,7 @@ import logging
 
 import pandas as pd
 
+from ..i18n import L
 from .base import AdapterError, AdapterUnavailable, MarketDataAdapter, RateLimited
 
 log = logging.getLogger(__name__)
@@ -53,20 +54,20 @@ class YahooAdapter(MarketDataAdapter):
             import yfinance as yf
             from yfinance import exceptions as yfe
         except ImportError as e:  # pragma: no cover
-            raise AdapterUnavailable("未安装 yfinance") from e
+            raise AdapterUnavailable(L("未安装 yfinance", "yfinance is not installed")) from e
         dl = self._download or yf.download
         try:
             return dl(symbols, group_by="ticker", auto_adjust=True, progress=False,
                       threads=True, timeout=12, **kw)
         except yfe.YFRateLimitError:
-            raise RateLimited("Yahoo 行情限流") from None
+            raise RateLimited(L("Yahoo 行情限流", "Yahoo quotes rate-limited")) from None
         except (ConnectionError, TimeoutError, OSError) as e:
-            raise AdapterUnavailable(f"Yahoo 行情不可用：{type(e).__name__}") from None
+            raise AdapterUnavailable(L(f"Yahoo 行情不可用：{type(e).__name__}", f"Yahoo quotes unavailable: {type(e).__name__}")) from None
         except Exception as e:
             name = type(e).__name__
             if "RateLimit" in name or "429" in str(e):
-                raise RateLimited("Yahoo 行情限流") from None
-            raise AdapterError(f"Yahoo 行情错误：{name}") from None
+                raise RateLimited(L("Yahoo 行情限流", "Yahoo quotes rate-limited")) from None
+            raise AdapterError(L(f"Yahoo 行情错误：{name}", f"Yahoo quotes error: {name}")) from None
 
     def history(self, symbols: list[str], period: str = "5y") -> dict[str, pd.DataFrame]:
         if not symbols:

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QButtonGroup, QHBoxLayout, QLabel, QPushButton, Q
 
 from ..behavior.detectors import trade_day
 from ..engine import TickerView
+from ..i18n import L
 from ..models import Trade
 from ..quant import indicators as ind
 from . import render
@@ -60,7 +61,7 @@ class CandleItem(pg.GraphicsObject):
 
 
 class DetailWindow(QWidget):
-    RANGES = (("3月", 63), ("6月", 126), ("1年", 252), ("2年", 504), ("全部", 0))
+    RANGES = ((L("3月", "3M"), 63), (L("6月", "6M"), 126), (L("1年", "1Y"), 252), (L("2年", "2Y"), 504), (L("全部", "All"), 0))
     show_range = True          # 震荡区间 overlay; shared by all detail windows in this session
 
     def __init__(self, symbol: str, pal: T.Palette):
@@ -90,10 +91,10 @@ class DetailWindow(QWidget):
         top.addSpacing(16)
         top.addWidget(self.pos)
         top.addStretch(1)
-        self.btn_range = QPushButton("震荡区间")
+        self.btn_range = QPushButton(L("震荡区间", "Trading range"))
         self.btn_range.setCheckable(True)
         self.btn_range.setChecked(DetailWindow.show_range)
-        self.btn_range.setToolTip("在图上显示 / 隐藏高抛低吸规则的支撑、阻力、低吸区 / 高抛区和历史信号")
+        self.btn_range.setToolTip(L("在图上显示 / 隐藏高抛低吸规则的支撑、阻力、低吸区 / 高抛区和历史信号", "Show / hide the range rule's support, resistance, buy zone / sell zone and past signals on the chart"))
         self.btn_range.toggled.connect(self._toggle_range)
         top.addWidget(self.btn_range)
         top.addSpacing(12)
@@ -117,7 +118,7 @@ class DetailWindow(QWidget):
         self.glw.ci.layout.setRowStretchFactor(0, 5)
         self.glw.ci.layout.setRowStretchFactor(1, 2)
         self.glw.ci.layout.setRowStretchFactor(2, 2)
-        for pl, name in ((self.p_price, "价格 · SMA20/50/200 · 布林带"), (self.p_rsi, "RSI(14)"), (self.p_macd, "MACD(12,26,9)")):
+        for pl, name in ((self.p_price, L("价格 · SMA20/50/200 · 布林带", "Price · SMA20/50/200 · Bollinger bands")), (self.p_rsi, "RSI(14)"), (self.p_macd, "MACD(12,26,9)")):
             pl.showGrid(x=True, y=True, alpha=0.12)
             pl.setMenuEnabled(False)
             pl.hideButtons()
@@ -161,17 +162,21 @@ class DetailWindow(QWidget):
         self.plan = plan
         self.trades = [t for t in trades if t.symbol == self.symbol]
         col = self.pal.sign(v.day_chg)
-        self.quote.setText(f"{T.price(v.price)}　<span style='color:{col};'>{v.day_chg:+.2f}（{T.pct(v.day_pct)}）</span>")
+        self.quote.setText(L(f"{T.price(v.price)}　<span style='color:{col};'>{v.day_chg:+.2f}（{T.pct(v.day_pct)}）</span>",
+                                f"{T.price(v.price)}  <span style='color:{col};'>{v.day_chg:+.2f} ({T.pct(v.day_pct)})</span>"))
         self.quote.setTextFormat(Qt.RichText)
         if v.qty and T.PRIVATE:
-            self.pos.setText("隐私模式：持仓数据已隐藏")
+            self.pos.setText(L("隐私模式：持仓数据已隐藏", "Privacy mode: holdings hidden"))
         elif v.qty:
             c = self.pal.sign(v.upl)
-            self.pos.setText(f"持有 {v.qty:g} 股 · 成本 {T.price(v.avg_cost)} · 市值 {T.money(v.value, decimals=0)} · "
-                             f"<span style='color:{c};'>浮动盈亏 {T.money(v.upl, True, 0)}（{T.pct(v.upl_pct, 1)}）</span>"
-                             f" · 来源 {'手动填写' if v.source in ('', 'manual') else v.source}")
+            self.pos.setText(L(f"持有 {v.qty:g} 股 · 成本 {T.price(v.avg_cost)} · 市值 {T.money(v.value, decimals=0)} · "
+                               f"<span style='color:{c};'>浮动盈亏 {T.money(v.upl, True, 0)}（{T.pct(v.upl_pct, 1)}）</span>"
+                               f" · 来源 {'手动填写' if v.source in ('', 'manual') else v.source}",
+                               f"Holding {v.qty:g} sh · cost {T.price(v.avg_cost)} · value {T.money(v.value, decimals=0)} · "
+                               f"<span style='color:{c};'>unrealised P&L {T.money(v.upl, True, 0)} ({T.pct(v.upl_pct, 1)})</span>"
+                               f" · source {'manual entry' if v.source in ('', 'manual') else v.source}"))
         else:
-            self.pos.setText("未持仓" + (f" · {v.note}" if v.note else ""))
+            self.pos.setText(L("未持仓", "No position") + (f" · {v.note}" if v.note else ""))
         self.pos.setTextFormat(Qt.RichText)
         pos = self.text.verticalScrollBar().value()
         self.text.setHtml(render.analysis_html(v, self.pal, ref))
@@ -224,20 +229,20 @@ class DetailWindow(QWidget):
         src = "" if v.levels_src == "user" else "≈"
         secret = bool(v.qty) and T.PRIVATE      # cost-anchored lines and own trades would reveal the position
         if not secret:
-            hline(v.stop, down, f"止损{src}")
-            hline(v.target, up, f"目标{src}")
+            hline(v.stop, down, L(f"止损{src}", f"Stop{src}"))
+            hline(v.target, up, L(f"目标{src}", f"Target{src}"))
         if v.qty and not secret:
-            hline(v.avg_cost, T.SUB, "成本", Qt.DotLine)
+            hline(v.avg_cost, T.SUB, L("成本", "Cost"), Qt.DotLine)
         if self.plan is not None and not T.PRIVATE:        # levels the user wrote into their own plan
             lv = self.plan.chart_levels(self.symbol)       # converted when the plan follows another stock
             if lv:
                 ap = "≈" if lv["approx"] else ""
-                hline(lv["exit"], T.AMBER, f"计划·底线{ap}", Qt.DashDotLine)
+                hline(lv["exit"], T.AMBER, L(f"计划·底线{ap}", f"Plan: floor{ap}"), Qt.DashDotLine)
                 for x in lv["reduce"]:
-                    hline(x, T.BLUE, f"计划·减仓{ap}", Qt.DashDotLine)
+                    hline(x, T.BLUE, L(f"计划·减仓{ap}", f"Plan: trim{ap}"), Qt.DashDotLine)
                 for x in lv["buy"]:
-                    hline(x, T.BLUE, f"计划·买入{ap}", Qt.DashDotLine)
-                hline(lv["target"], T.AMBER, f"计划·目标{ap}", Qt.DashDotLine)
+                    hline(x, T.BLUE, L(f"计划·买入{ap}", f"Plan: buy{ap}"), Qt.DashDotLine)
+                hline(lv["target"], T.AMBER, L(f"计划·目标{ap}", f"Plan: target{ap}"), Qt.DashDotLine)
 
         # the user's own executions
         day_pos = {d: i for i, d in enumerate(dates)}
@@ -247,7 +252,7 @@ class DetailWindow(QWidget):
             if pts:
                 pp.addItem(pg.ScatterPlotItem([p[0] for p in pts], [p[1] for p in pts], symbol=sym, size=13,
                                               brush=pg.mkBrush(color), pen=pg.mkPen("#ffffff", width=1),
-                                              name="我的买入" if side == "BUY" else "我的卖出"))
+                                              name=L("我的买入", "My buys") if side == "BUY" else L("我的卖出", "My sells")))
 
         rg = v.analysis.range if v.analysis is not None else None
         if DetailWindow.show_range and rg is not None:
@@ -296,14 +301,14 @@ class DetailWindow(QWidget):
             band(*rg.buy_band, up)
             band(*rg.sell_band, down)
             for val, color, text, style, width in (
-                    (rg.support, up, "支撑", Qt.SolidLine, 1.6), (rg.resistance, down, "阻力", Qt.SolidLine, 1.6),
-                    (rg.stop, T.SUB, "区间失效", Qt.DotLine, 1.0), (rg.breakout, T.SUB, "突破", Qt.DotLine, 1.0)):
+                    (rg.support, up, L("支撑", "Support"), Qt.SolidLine, 1.6), (rg.resistance, down, L("阻力", "Resistance"), Qt.SolidLine, 1.6),
+                    (rg.stop, T.SUB, L("区间失效", "Range invalid"), Qt.DotLine, 1.0), (rg.breakout, T.SUB, L("突破", "Breakout"), Qt.DotLine, 1.0)):
                 pp.plot(xs, [val, val], pen=pg.mkPen(color, width=width, style=style))
                 if style == Qt.SolidLine:      # dotted invalidation lines stay unlabelled (values are in the table)
-                    lbl = pg.TextItem(f"{text} {val:,.2f}", color=color, anchor=(0, 1 if text == "阻力" else 0))
+                    lbl = pg.TextItem(f"{text} {val:,.2f}", color=color, anchor=(0, 1 if text == L("阻力", "Resistance") else 0))
                     lbl.setPos(x0, val)
                     pp.addItem(lbl)
-        groups = {"buy": ("t1", up, "区间低吸"), "exit": ("t", down, "区间高抛 / 离场")}
+        groups = {"buy": ("t1", up, L("区间低吸", "Range buy")), "exit": ("t", down, L("区间高抛 / 离场", "Range sell / exit"))}
         for key, (sym, color, name) in groups.items():
             kinds = ("buy",) if key == "buy" else ("sell", "stop", "time")
             pts = [(e.i, e.price) for e in rg.events if e.kind in kinds and e.i >= start]

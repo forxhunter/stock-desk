@@ -13,6 +13,7 @@ import json
 import re
 from urllib.parse import quote
 
+from ..i18n import L, term
 from ..models import MarketOdds
 from .base import AdapterError, HttpGet, OddsAdapter, get_json, http_get
 
@@ -142,7 +143,7 @@ class PolymarketAdapter(OddsAdapter):
                 continue            # pinned to stocks that are no longer on the watchlist
             if not tickers and not self.macro:
                 continue
-            queries.append((kw["q"], kw.get("label") or kw["q"], [t for t in tickers if t in watch], False))
+            queries.append((kw["q"], term(kw.get("label") or kw["q"]), [t for t in tickers if t in watch], False))
         if self.auto:
             known = {q.lower() for q, _, _, _ in queries}
             for sym, aliases in list(watch.items())[:20]:
@@ -189,11 +190,11 @@ class PolymarketAdapter(OddsAdapter):
                 self.errors.append(f"{slug}: {e}")
                 continue
             for m in rows or []:
-                r = parse_market(m, None, "已固定")
+                r = parse_market(m, None, L("已固定", "Pinned"))
                 if r:
                     found.setdefault(r[0].id, r)
         if queries and not ok and not found:
-            raise AdapterError(self.errors[0] if self.errors else "Polymarket 不可用")
+            raise AdapterError(self.errors[0] if self.errors else L("Polymarket 不可用", "Polymarket unavailable"))
 
         out = sorted(found.values(), key=lambda r: -r[0].volume_24h)[: self.max_markets]
         if self.with_history:

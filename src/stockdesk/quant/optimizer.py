@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
+from ..i18n import L
+
 TRADING_DAYS = 252
 
 
@@ -101,10 +103,10 @@ def mean_variance_weights(mu: np.ndarray, cov: np.ndarray, risk_aversion: float 
 
 
 METHODS = {
-    "risk_parity": "风险平价",
-    "min_vol": "最小波动",
-    "max_sharpe": "最大夏普",
-    "mean_variance": "均值-方差",
+    "risk_parity": L("风险平价", "Risk parity"),
+    "min_vol": L("最小波动", "Minimum volatility"),
+    "max_sharpe": L("最大夏普", "Maximum Sharpe"),
+    "mean_variance": L("均值-方差", "Mean-variance"),
 }
 
 
@@ -135,10 +137,16 @@ def optimize(prices: pd.DataFrame, max_weight: float = 0.35, lookback: int = 504
         ret = float(w @ mu_a)
         res.stats[k] = {"ret": ret, "vol": vol, "sharpe": (ret - rf) / vol if vol > 0 else 0.0}
     res.notes = [
-        f"基于最近 {len(rets)} 个交易日、{n} 只股票；协方差做了 Ledoit-Wolf 收缩（强度 {shrink:.2f}）。",
-        "预期收益来自历史均值并向平均值收缩 50%，误差仍然很大；最大夏普 / 均值-方差对它非常敏感，"
-        "容易过拟合历史。风险平价和最小波动只依赖协方差，相对稳健。",
-        f"单只权重上限 {max_w*100:.0f}%，只做多、不加杠杆。结果是参考，不是指令。",
+        L(f"基于最近 {len(rets)} 个交易日、{n} 只股票；协方差做了 Ledoit-Wolf 收缩（强度 {shrink:.2f}）。",
+          f"Based on the last {len(rets)} trading days and {n} stocks; the covariance uses Ledoit-Wolf shrinkage "
+          f"(intensity {shrink:.2f})."),
+        L("预期收益来自历史均值并向平均值收缩 50%，误差仍然很大；最大夏普 / 均值-方差对它非常敏感，"
+          "容易过拟合历史。风险平价和最小波动只依赖协方差，相对稳健。",
+          "Expected returns come from historical means shrunk 50% towards the average and are still very noisy; "
+          "maximum Sharpe / mean-variance are highly sensitive to them and tend to overfit the history. "
+          "Risk parity and minimum volatility depend only on the covariance and are relatively robust."),
+        L(f"单只权重上限 {max_w*100:.0f}%，只做多、不加杠杆。结果是参考，不是指令。",
+          f"Per-stock weight cap {max_w*100:.0f}%, long-only, no leverage. The result is a reference, not an instruction."),
     ]
     return res
 

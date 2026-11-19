@@ -13,6 +13,7 @@ import tarfile
 from pathlib import Path
 
 from . import paths
+from .i18n import L
 
 log = logging.getLogger(__name__)
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
@@ -172,18 +173,24 @@ def keep_in_sync(cfg: dict | None, state: dict | None, runner=subprocess.run, no
             fixed = len(changed)
             found, age, _ = remote_state(s, runner)
             changed, extra = diff(local, found)
-        when = f"{_time.strftime('%H:%M', _time.localtime(now))} 核对"
+        clock = _time.strftime('%H:%M', _time.localtime(now))
+        when = L(f"{clock} 核对", f"checked at {clock}")
         if changed:
-            status = ("error", f"远程同步：{host} 上有 {len(changed)} 个文件和这台电脑不一致（{'、'.join(changed[:3])}），下一轮重试")
+            status = ("error", L(f"远程同步：{host} 上有 {len(changed)} 个文件和这台电脑不一致（{'、'.join(changed[:3])}），下一轮重试",
+                                 f"Remote sync: {len(changed)} file(s) on {host} differ from this computer ({', '.join(changed[:3])}); will retry next cycle"))
         elif age is None or age > STALE_AFTER:
-            ago = "还没有运行记录" if age is None else f"已 {age / 60:.0f} 分钟没有运行"
-            status = ("error", f"远程同步：文件一致（{len(local)} 个），但 {host} 的定时任务{ago}，提醒邮件可能发不出")
+            ago = L("还没有运行记录", "has no run recorded yet") if age is None else L(f"已 {age / 60:.0f} 分钟没有运行", f"has not run for {age / 60:.0f} minutes")
+            status = ("error", L(f"远程同步：文件一致（{len(local)} 个），但 {host} 的定时任务{ago}，提醒邮件可能发不出",
+                                 f"Remote sync: files match ({len(local)}), but the scheduled job on {host} {ago}, so alert e-mails may not go out"))
         else:
-            status = ("ok", f"远程同步：与 {host} 完全一致（{len(local)} 个文件逐个比对，{when}"
-                            + (f"，刚更新了 {fixed} 个" if fixed else "") + f"）；那边 {age / 60:.0f} 分钟前跑过一轮")
+            status = ("ok", L(f"远程同步：与 {host} 完全一致（{len(local)} 个文件逐个比对，{when}"
+                              + (f"，刚更新了 {fixed} 个" if fixed else "") + f"）；那边 {age / 60:.0f} 分钟前跑过一轮",
+                              f"Remote sync: identical to {host} ({len(local)} files compared one by one, {when}"
+                              + (f", just updated {fixed}" if fixed else "") + f"); it ran a cycle {age / 60:.0f} minutes ago"))
         log.info("remote check: %s", status[1])
         return {"stamp": st, "checked_at": now, "status": status}
     except Exception as e:                           # offline, asleep, no key: say so and retry next cycle
         log.warning("remote check failed: %s", type(e).__name__)
         return {"stamp": None, "checked_at": now,
-                "status": ("error", f"远程同步：连不上 {host}（{type(e).__name__}），下一轮重试；连上后会自动补齐")}
+                "status": ("error", L(f"远程同步：连不上 {host}（{type(e).__name__}），下一轮重试；连上后会自动补齐",
+                                      f"Remote sync: cannot reach {host} ({type(e).__name__}); will retry next cycle and catch up once connected"))}

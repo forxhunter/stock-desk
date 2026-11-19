@@ -50,6 +50,15 @@ def detect() -> str:
 LANG = detect()
 
 
+# labels that ship in config.default.yaml (a config file cannot call L)
+TERMS = {"美联储利率": "Fed rate", "衰退": "Recession", "关税": "Tariffs"}
+
+
+def term(text: str) -> str:
+    """English for a label that came from the default configuration; anything else is returned as it is."""
+    return TERMS.get(text, text) if LANG == "en" else text
+
+
 def L(zh: str, en: str) -> str:
     """The Chinese or the English wording, by the interface language."""
     return en if LANG == "en" else zh

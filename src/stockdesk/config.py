@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from . import paths
+from .i18n import L
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -64,7 +65,8 @@ class Config:
         if self.user_path is None:
             return
         self.user_path.parent.mkdir(parents=True, exist_ok=True)
-        header = "# Stock Desk 用户配置（覆盖 config.default.yaml）。不要在这里写密码或 token。\n"
+        header = L("# Stock Desk 用户配置（覆盖 config.default.yaml）。不要在这里写密码或 token。\n",
+                   "# Stock Desk user settings (override config.default.yaml). Do not put passwords or tokens here.\n")
         self.user_path.write_text(
             header + yaml.safe_dump(self._user, allow_unicode=True, sort_keys=False), encoding="utf-8"
         )

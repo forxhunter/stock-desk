@@ -23,6 +23,7 @@ from .adapters.yahoo import YahooAdapter
 from .behavior import detectors
 from .behavior.demo import make_demo_trades
 from .config import Config
+from .i18n import L
 from .models import Alert, BrokerData, MarketOdds, NewsItem, Position, Trade
 from .quant import optimizer
 from .quant.analysis import Analysis, analyze
@@ -81,7 +82,7 @@ class Snapshot:
     cash: float | None = None
     equity: float = 0.0
     equity_known: bool = False     # False = equity is just the sum of positions (cash unknown)
-    mode: str = "演示"
+    mode: str = L("演示", "Demo")
     sources: dict[str, tuple[str, str]] = field(default_factory=dict)   # name -> (state, message)
     conc: Concentration | None = None
     opt: optimizer.OptResult | None = None
@@ -177,24 +178,27 @@ class Engine:
                 self.store.set_meta(f"broker:{a.name}", {
                     "positions": [asdict(p) for p in data.positions], "cash": data.cash,
                     "net_liquidation": data.net_liquidation})
-                notes = "；".join(getattr(a, "notes", []) or [])
-                self._status[a.name] = ("ok", f"{a.label}：已同步 {len(data.positions)} 个持仓"
-                                              f"{'、' + str(len(data.trades)) + ' 笔成交' if data.trades else ''}"
-                                              f"{'。' + notes if notes else ''}")
+                notes = L("；", "; ").join(getattr(a, "notes", []) or [])
+                self._status[a.name] = ("ok", L(f"{a.label}：已同步 {len(data.positions)} 个持仓"
+                                                f"{'、' + str(len(data.trades)) + ' 笔成交' if data.trades else ''}"
+                                                f"{'。' + notes if notes else ''}",
+                                                f"{a.label}: synced {len(data.positions)} position(s)"
+                                                f"{', ' + str(len(data.trades)) + ' trade(s)' if data.trades else ''}"
+                                                f"{'. ' + notes if notes else ''}"))
             except AdapterError as e:
                 cached = self.store.get_meta(f"broker:{a.name}")
                 state = "off" if isinstance(e, AdapterUnavailable) else "error"
-                msg = f"{a.label}：{e}"
+                msg = L(f"{a.label}：{e}", f"{a.label}: {e}")
                 if cached and a.name not in self._broker:
                     self._broker[a.name] = BrokerData(
                         positions=[Position(**p) for p in cached.get("positions", [])],
                         cash=cached.get("cash"), net_liquidation=cached.get("net_liquidation"))
                 if a.name in self._broker:
-                    msg += "（显示的是上次同步的持仓）"
+                    msg += L("（显示的是上次同步的持仓）", " (showing the positions from the last sync)")
                 self._status[a.name] = (state, msg)
                 log.warning("broker %s unavailable: %s", a.name, e)
             except Exception as e:  # never let a broker problem kill the refresh loop
-                self._status[a.name] = ("error", f"{a.label}：内部错误 {type(e).__name__}")
+                self._status[a.name] = ("error", L(f"{a.label}：内部错误 {type(e).__name__}", f"{a.label}: internal error {type(e).__name__}"))
                 log.exception("broker %s failed", a.name)
 
         # persist executions: one trade source per broker to avoid double counting
@@ -270,7 +274,7 @@ class Engine:
             if not intr.empty:
                 self._intraday[s] = intr
         if now < self._backoff_until and not force:
-            self._market_msg = "行情源限流中，暂用本地缓存"
+            self._market_msg = L("行情源限流中，暂用本地缓存", "Quote source is rate-limiting; using the local cache for now")
             return
         need_hist = force or now - self._hist_at > ttl or any(s not in self._daily for s in symbols)
         hist_age = self.store.meta_age("yahoo:history_at")
@@ -291,15 +295,15 @@ class Engine:
                 self._intraday[s] = df
                 self.store.save_bars(s, "15m", df)
             if not intr:
-                raise AdapterUnavailable("行情源没有返回数据")
+                raise AdapterUnavailable(L("行情源没有返回数据", "The quote source returned no data"))
             self._market_msg = ""
-            self._status["yahoo"] = ("ok", "Yahoo 行情：正常")
+            self._status["yahoo"] = ("ok", L("Yahoo 行情：正常", "Yahoo quotes: OK"))
         except RateLimited as e:
             self._backoff_until = now + 600
-            self._market_msg = f"{e}，10 分钟后重试，暂用本地缓存"
+            self._market_msg = L(f"{e}，10 分钟后重试，暂用本地缓存", f"{e}; retrying in 10 minutes, using the local cache for now")
             self._status["yahoo"] = ("error", self._market_msg)
         except AdapterError as e:
-            self._market_msg = f"{e}，暂用本地缓存"
+            self._market_msg = L(f"{e}，暂用本地缓存", f"{e}; using the local cache for now")
             self._status["yahoo"] = ("off", self._market_msg)
             log.warning("market data: %s", e)
 
@@ -362,11 +366,11 @@ class Engine:
                         self.store.upsert_news(items)
                     self.store.set_meta("semianalysis:validators", ad.validators)
                     self._news = self.store.load_news()
-                    self._status["semianalysis"] = ("ok", f"SemiAnalysis RSS：正常（缓存 {len(self._news)} 篇）")
+                    self._status["semianalysis"] = ("ok", L(f"SemiAnalysis RSS：正常（缓存 {len(self._news)} 篇）", f"SemiAnalysis RSS: OK ({len(self._news)} articles cached)"))
                 except AdapterError as e:
-                    self._status["semianalysis"] = ("off", f"SemiAnalysis RSS：{e}（显示缓存内容）")
+                    self._status["semianalysis"] = ("off", L(f"SemiAnalysis RSS：{e}（显示缓存内容）", f"SemiAnalysis RSS: {e} (showing cached content)"))
                 except Exception as e:
-                    self._status["semianalysis"] = ("error", f"SemiAnalysis RSS：内部错误 {type(e).__name__}")
+                    self._status["semianalysis"] = ("error", L(f"SemiAnalysis RSS：内部错误 {type(e).__name__}", f"SemiAnalysis RSS: internal error {type(e).__name__}"))
                     log.exception("semianalysis failed")
                 self.store.set_meta("semianalysis:at", time.time())
         if c.get("research.polymarket.enabled"):
@@ -381,12 +385,12 @@ class Engine:
                 try:
                     self._odds = ad.fetch(watch)
                     self.store.set_meta("polymarket:odds", [asdict(o) for o in self._odds])
-                    extra = f"，{len(ad.errors)} 个关键词失败" if ad.errors else ""
-                    self._status["polymarket"] = ("ok", f"Polymarket：正常（{len(self._odds)} 个市场{extra}）")
+                    extra = L(f"，{len(ad.errors)} 个关键词失败", f", {len(ad.errors)} keyword(s) failed") if ad.errors else ""
+                    self._status["polymarket"] = ("ok", L(f"Polymarket：正常（{len(self._odds)} 个市场{extra}）", f"Polymarket: OK ({len(self._odds)} markets{extra})"))
                 except AdapterError as e:
-                    self._status["polymarket"] = ("off", f"Polymarket：{e}（显示缓存内容）")
+                    self._status["polymarket"] = ("off", L(f"Polymarket：{e}（显示缓存内容）", f"Polymarket: {e} (showing cached content)"))
                 except Exception as e:
-                    self._status["polymarket"] = ("error", f"Polymarket：内部错误 {type(e).__name__}")
+                    self._status["polymarket"] = ("error", L(f"Polymarket：内部错误 {type(e).__name__}", f"Polymarket: internal error {type(e).__name__}"))
                     log.exception("polymarket failed")
                 self.store.set_meta("polymarket:at", time.time())
         self.store.set_meta("research:symbols", key)
@@ -429,13 +433,15 @@ class Engine:
                                            if float(t.get("timestamp") or 0) >= cut and t.get("event_slug")))
                 events = flow.fetch_events(slugs) if slugs else {}
                 parts["polymarket"] = flow.scan_polymarket(trades, events, watch, s["polymarket"], now)
-                self._status["flow"] = ("ok", f"异动扫描：正常（每 {int(self.cfg.get('flow.scan_minutes', 10))} 分钟，"
-                                              f"本次看了 {len(trades)} 笔 Polymarket 大单）")
+                self._status["flow"] = ("ok", L(f"异动扫描：正常（每 {int(self.cfg.get('flow.scan_minutes', 10))} 分钟，"
+                                                f"本次看了 {len(trades)} 笔 Polymarket 大单）",
+                                                f"Unusual-activity scan: OK (every {int(self.cfg.get('flow.scan_minutes', 10))} minutes, "
+                                                f"looked at {len(trades)} large Polymarket orders this time)"))
             except AdapterError as e:
-                rep.errors.append(f"Polymarket：{e}")
-                self._status["flow"] = ("off", f"异动扫描：Polymarket {e}（显示上次结果）")
+                rep.errors.append(L(f"Polymarket：{e}", f"Polymarket: {e}"))
+                self._status["flow"] = ("off", L(f"异动扫描：Polymarket {e}（显示上次结果）", f"Unusual-activity scan: Polymarket {e} (showing the last result)"))
             except Exception as e:
-                rep.errors.append(f"Polymarket：内部错误 {type(e).__name__}")
+                rep.errors.append(L(f"Polymarket：内部错误 {type(e).__name__}", f"Polymarket: internal error {type(e).__name__}"))
                 log.exception("polymarket flow scan failed")
         else:
             parts.pop("polymarket", None)
@@ -444,7 +450,7 @@ class Engine:
                 bars = self.market.history(list(s["futures"]["symbols"]), "6mo")
                 parts["futures"] = flow.scan_futures(bars, s["futures"], now)
             except Exception as e:
-                rep.errors.append(f"期货：{type(e).__name__}")
+                rep.errors.append(L(f"期货：{type(e).__name__}", f"Futures: {type(e).__name__}"))
                 log.exception("futures scan failed")
         else:
             parts.pop("futures", None)
@@ -461,7 +467,7 @@ class Engine:
                     parts["options"] = flow.scan_options(chains, s["options"], set(self.watchlist.symbols()), now)
                     self.store.set_meta("flow:options_at", now)
                 except Exception as e:
-                    rep.errors.append(f"期权：{type(e).__name__}")
+                    rep.errors.append(L(f"期权：{type(e).__name__}", f"Options: {type(e).__name__}"))
                     log.exception("options scan failed")
         else:
             parts.pop("options", None)
@@ -586,7 +592,7 @@ class Engine:
         live = [n for n in enabled_brokers if self._status[n][0] == "ok"]
         snap.mode = ("IBKR" if any(n.startswith("ibkr") for n in live) else "") + \
                     ("+RH" if any(n.startswith("robinhood") for n in live) else "")
-        snap.mode = snap.mode.strip("+") or ("券商离线" if enabled_brokers else "演示")
+        snap.mode = snap.mode.strip("+") or (L("券商离线", "Broker offline") if enabled_brokers else L("演示", "Demo"))
         snap.sample_holdings = self.watchlist.has_sample_holdings()
 
         snap.conc = concentration({v.symbol: v.value for v in views if v.value > 0},
@@ -626,7 +632,10 @@ class Engine:
                                            float(q.get("max_position_pct", 25.0)),
                                            float(q.get("rebalance_min_trade_pct", 1.0)))
             if no_fx:
-                snap.briefing.notes.append(f"{'、'.join(no_fx)} 没有取到汇率，市值暂按 1:1 计入美元，占比不准。")
+                snap.briefing.notes.append(
+                    L(f"{'、'.join(no_fx)} 没有取到汇率，市值暂按 1:1 计入美元，占比不准。",
+                      f"No exchange rate for {', '.join(no_fx)}; market value is counted 1:1 in USD for now, "
+                      "so the weights are not exact."))
         except Exception:
             log.exception("briefing failed")
         self.snapshot = snap
@@ -655,20 +664,30 @@ class Engine:
                 snap.bottoms[sym] = st
         for sym, st in snap.bottoms.items():
             if st.triggered:
-                label = f"{sym}（{names[sym]}）" if sym in names else sym
-                lines = [f"{label} 出现有成交量确认的筑底信号：价格条件 {st.score}/6 成立（门槛 {st.min_score}），"
-                         f"成交量条件 {st.vol_score}/3 成立（门槛 {st.min_vol_score}）。",
-                         f"收盘 {st.close:,.2f}（{st.asof:%Y-%m-%d}），距 52 周高点 {st.drawdown_pct:.1f}%，"
-                         f"这一轮的低点 {st.base_low:,.2f}（{st.base_low_date:%m-%d}）。"]
-                lines += [f"{'✓' if ok else '✗'} {bottom_labels[k]}：{d}" for k, ok, d in st.checks]
-                peers = [f"{o}：{snap.bottoms[o].summary}" + ("（也已达到门槛）" if snap.bottoms[o].triggered else "")
+                label = L(f"{sym}（{names[sym]}）", f"{sym} ({names[sym]})") if sym in names else sym
+                lines = [L(f"{label} 出现有成交量确认的筑底信号：价格条件 {st.score}/6 成立（门槛 {st.min_score}），"
+                           f"成交量条件 {st.vol_score}/3 成立（门槛 {st.min_vol_score}）。",
+                           f"{label}: bottoming signal with volume confirmation: price conditions {st.score}/6 met "
+                           f"(threshold {st.min_score}), volume conditions {st.vol_score}/3 met (threshold {st.min_vol_score})."),
+                         L(f"收盘 {st.close:,.2f}（{st.asof:%Y-%m-%d}），距 52 周高点 {st.drawdown_pct:.1f}%，"
+                           f"这一轮的低点 {st.base_low:,.2f}（{st.base_low_date:%m-%d}）。",
+                           f"Close {st.close:,.2f} ({st.asof:%Y-%m-%d}), {st.drawdown_pct:.1f}% below the 52-week high, "
+                           f"low of this leg {st.base_low:,.2f} ({st.base_low_date:%m-%d}).")]
+                lines += [L(f"{'✓' if ok else '✗'} {bottom_labels[k]}：{d}", f"{'✓' if ok else '✗'} {bottom_labels[k]}: {d}")
+                          for k, ok, d in st.checks]
+                peers = [L(f"{o}：{snap.bottoms[o].summary}", f"{o}: {snap.bottoms[o].summary}")
+                         + (L("（也已达到门槛）", " (threshold also met)") if snap.bottoms[o].triggered else "")
                          for o in dict.fromkeys(symbols) if o != sym and o in snap.bottoms]
                 if peers:
-                    lines.append("同时盯着的其它股票 — " + "；".join(peers) + "。")
-                lines.append("这是按固定规则统计的形态信号，不是预测：历史上这类信号出现后既有继续上涨的，也有再创新低的。"
-                             "如果收盘跌破上面这个低点，这次信号就作废。")
+                    lines.append(L("同时盯着的其它股票 — " + "；".join(peers) + "。",
+                                   "Other stocks being watched — " + "; ".join(peers) + "."))
+                lines.append(L("这是按固定规则统计的形态信号，不是预测：历史上这类信号出现后既有继续上涨的，也有再创新低的。"
+                               "如果收盘跌破上面这个低点，这次信号就作废。",
+                               "This is a pattern signal counted by fixed rules, not a prediction: historically this kind of signal "
+                               "has been followed both by further gains and by new lows. If the close falls below the low "
+                               "above, this signal is void."))
                 out.append(Alert(f"bottom:{sym}:{st.base_low_date:%Y%m%d}", "bottoming", sym, "warn",
-                                 f"筑底信号：{label}", "\n".join(lines),
+                                 L(f"筑底信号：{label}", f"Bottoming signal: {label}"), "\n".join(lines),
                                  {"score": st.score, "vol_score": st.vol_score, "base_low": st.base_low}))
         return out
 
@@ -705,7 +724,8 @@ class Engine:
                 for key, level, title, text in st.events:
                     out.append(Alert(f"plan:{sym}:{key}:{level:.10g}", "plan_level", sym,
                                      "high" if key == "exit" else "warn", title,
-                                     text + "\n价位是你自己在计划里写的；程序只负责提醒，不会下单。",
+                                     text + L("\n价位是你自己在计划里写的；程序只负责提醒，不会下单。",
+                                              "\nThe levels are ones you wrote in your plan; the program only reminds you and never places orders."),
                                      {"key": key, "level": level}))
         except Exception:
             log.exception("plans failed")
@@ -724,9 +744,12 @@ class Engine:
             return
         if not self.mail_role_ok():
             if os.environ.get("STOCKDESK_ROLE", "local") == "remote":
-                msg = "邮件提醒：目前由桌面电脑发送（在桌面电脑上运行 scripts/push_secrets.py 后改由本机发）"
+                msg = L("邮件提醒：目前由桌面电脑发送（在桌面电脑上运行 scripts/push_secrets.py 后改由本机发）",
+                        "E-mail alerts: currently sent by the desktop computer (run scripts/push_secrets.py on the desktop to send from this machine instead)")
             else:
-                msg = f"邮件提醒：由 {self.cfg.get('remote.host', '') or '另一台机器'} 发送（这台电脑不发，避免重复）"
+                other = self.cfg.get('remote.host', '') or L('另一台机器', 'another machine')
+                msg = L(f"邮件提醒：由 {other} 发送（这台电脑不发，避免重复）",
+                        f"E-mail alerts: sent by {other} (not by this computer, to avoid duplicates)")
             self._status["email"] = ("ok", msg)
             snap.sources = dict(self._status)
             return
@@ -740,16 +763,16 @@ class Engine:
         flows = [a for a in todo if a.kind == "flow" and ranks.get(a.severity, 0) >= ranks.get(fs["email_min_severity"], 2)][:left]
         todo = [a for a in todo if a.kind != "flow"] + flows
         if not todo:
-            self._status.setdefault("email", ("ok", f"邮件提醒：已开启（发往 {s['to']}）"))
+            self._status.setdefault("email", ("ok", L(f"邮件提醒：已开启（发往 {s['to']}）", f"E-mail alerts: on (sending to {s['to']})")))
             return
         try:
             notify.send(s, *notify.alert_mail(todo))
             self.store.set_meta("email:sent", sorted(sent | {a.id for a in todo})[-500:])
             if flows:
                 self.store.set_meta("email:flow_quota", {day: int(quota.get(day, 0)) + len(flows)})
-            self._status["email"] = ("ok", f"邮件提醒：已发送 {len(todo)} 条到 {s['to']}")
+            self._status["email"] = ("ok", L(f"邮件提醒：已发送 {len(todo)} 条到 {s['to']}", f"E-mail alerts: sent {len(todo)} to {s['to']}"))
         except notify.NotifyError as e:
-            self._status["email"] = ("error", f"邮件提醒：{e}")
+            self._status["email"] = ("error", L(f"邮件提醒：{e}", f"E-mail alerts: {e}"))
             log.warning("email notification failed: %s", e)
         snap.sources = dict(self._status)
 
@@ -759,7 +782,7 @@ class Engine:
             return
         trades = self.store.load_trades()
         real = [t for t in trades if not t.demo]
-        if not real and b.get("demo_sample_trades", True) and snap.mode == "演示":
+        if not real and b.get("demo_sample_trades", True) and snap.mode == L("演示", "Demo"):
             if not trades and self._daily:
                 demo = make_demo_trades(self._daily, self.watchlist.symbols(), int(b.get("runup_days", 5)))
                 self.store.upsert_trades(demo)

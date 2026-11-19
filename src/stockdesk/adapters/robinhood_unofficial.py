@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable
 
+from ..i18n import L
 from ..models import BrokerData, Position, Trade
 from .base import AdapterError, AdapterUnavailable, BrokerAdapter
 
@@ -29,7 +30,7 @@ class _ReadOnly:
 
     def __getattr__(self, name: str):
         if name not in _READ_FUNCS:
-            raise AdapterError(f"robin_stocks.{name} 不在只读白名单内")
+            raise AdapterError(L(f"robin_stocks.{name} 不在只读白名单内", f"robin_stocks.{name} is not on the read-only allowlist"))
         return getattr(self._module, name)
 
 
@@ -51,7 +52,7 @@ def _ts(s: str | None) -> float:
 
 class RobinhoodUnofficialAdapter(BrokerAdapter):
     name = "robinhood_unofficial"
-    label = "Robinhood (非官方 robin_stocks)"
+    label = L("Robinhood (非官方 robin_stocks)", "Robinhood (unofficial robin_stocks)")
     official = False
 
     def __init__(self, username: str, password_provider: Callable[[], str | None],
@@ -73,7 +74,7 @@ class RobinhoodUnofficialAdapter(BrokerAdapter):
             import robin_stocks.robinhood as rh
             import robin_stocks.robinhood.authentication as auth
         except ImportError:
-            raise AdapterUnavailable("未安装 robin_stocks（pip install robin_stocks）") from None
+            raise AdapterUnavailable(L("未安装 robin_stocks（pip install robin_stocks）", "robin_stocks is not installed (pip install robin_stocks)")) from None
         if self._code_prompt is not None:
             # robin_stocks asks for SMS/e-mail codes with input(); route that to the GUI instead
             auth.input = lambda prompt="": self._code_prompt(str(prompt))
@@ -84,18 +85,18 @@ class RobinhoodUnofficialAdapter(BrokerAdapter):
         if self._logged_in:
             return
         if not self.username:
-            raise AdapterUnavailable("Robinhood 未配置用户名")
+            raise AdapterUnavailable(L("Robinhood 未配置用户名", "No Robinhood username set"))
         password = self._password_provider()
         if not password:
-            raise AdapterUnavailable("Robinhood 密码未保存（在 数据源 设置里输入，存入 Windows 凭据管理器）")
+            raise AdapterUnavailable(L("Robinhood 密码未保存（在 数据源 设置里输入，存入 Windows 凭据管理器）", "Robinhood password not saved (enter it in the sources settings; it is stored in Windows Credential Manager)"))
         try:
             res = rh.login(username=self.username, password=password, store_session=self.store_session)
         except Exception as e:
-            raise AdapterError(f"Robinhood 登录失败：{type(e).__name__}") from None
+            raise AdapterError(L(f"Robinhood 登录失败：{type(e).__name__}", f"Robinhood sign-in failed: {type(e).__name__}")) from None
         finally:
             password = None
         if not res:
-            raise AdapterUnavailable("Robinhood 登录未成功（密码错误或未在手机上批准设备）")
+            raise AdapterUnavailable(L("Robinhood 登录未成功（密码错误或未在手机上批准设备）", "Robinhood sign-in did not succeed (wrong password, or the device was not approved on the phone)"))
         self._logged_in = True
 
     def _symbol(self, rh, url: str) -> str:
@@ -137,5 +138,5 @@ class RobinhoodUnofficialAdapter(BrokerAdapter):
             raise
         except Exception as e:
             self._logged_in = False
-            raise AdapterError(f"Robinhood 读取失败：{type(e).__name__}") from None
+            raise AdapterError(L(f"Robinhood 读取失败：{type(e).__name__}", f"Robinhood read failed: {type(e).__name__}")) from None
         return data

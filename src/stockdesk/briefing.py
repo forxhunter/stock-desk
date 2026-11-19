@@ -12,6 +12,7 @@ from datetime import date, datetime
 
 import numpy as np
 
+from .i18n import L
 from .quant import optimizer
 
 DEFAULTS = {
@@ -23,9 +24,13 @@ DEFAULTS = {
 }
 
 RANGE_TEXT = {
-    "buy": "接近支撑（低吸区）", "sell": "接近阻力（高抛区）", "mid": "区间中部",
-    "breakout_up": "向上突破区间", "breakdown": "向下跌破区间", "loose": "区间松动",
-    "none": "非震荡", "short": "数据不足",
+    "buy": L("接近支撑（低吸区）", "Near support (buy zone)"),
+    "sell": L("接近阻力（高抛区）", "Near resistance (sell zone)"),
+    "mid": L("区间中部", "Mid-range"),
+    "breakout_up": L("向上突破区间", "Breakout above the range"),
+    "breakdown": L("向下跌破区间", "Breakdown below the range"),
+    "loose": L("区间松动", "Range loosening"),
+    "none": L("非震荡", "Not ranging"), "short": L("数据不足", "No data"),
 }
 
 
@@ -38,7 +43,7 @@ class BriefItem:
     qty: float = 0.0
     weight: float = 0.0
     upl_pct: float = 0.0
-    stance: str = "数据不足"
+    stance: str = L("数据不足", "No data")
     composite: float = 0.0
     range_status: str = "short"
     range_label: str = ""
@@ -49,7 +54,7 @@ class BriefItem:
     levels_src: str = ""
     stop_dist_pct: float | None = None     # how far the price is above the stop (negative = below)
     cap_pct: float = 25.0
-    cap_src: str = "默认"
+    cap_src: str = L("默认", "default")
     flags: list[tuple[str, str]] = field(default_factory=list)    # (level, text); level: high|warn|info
     changes: list[str] = field(default_factory=list)
     has_data: bool = True
@@ -79,24 +84,32 @@ def _state(it: BriefItem, keys: set[str]) -> dict:
 
 
 _CHANGE = {
-    "below_stop": ("跌破止损参考位", "回到止损参考位上方"),
-    "at_target": ("到达目标参考位", "回落到目标参考位下方"),
-    "over_cap": ("仓位超过上限", "仓位回到上限以内"),
-    "downtrend": ("进入“下行 50 日均线下方”状态（加仓暂停条件成立）", "离开“下行 50 日均线下方”状态"),
-    "panic": ("出现急跌 + 超卖", "急跌 + 超卖状态结束"),
+    "below_stop": (L("跌破止损参考位", "Fell below the stop reference"),
+                   L("回到止损参考位上方", "Back above the stop reference")),
+    "at_target": (L("到达目标参考位", "Reached the target reference"),
+                  L("回落到目标参考位下方", "Fell back below the target reference")),
+    "over_cap": (L("仓位超过上限", "Position went above the cap"),
+                 L("仓位回到上限以内", "Position back within the cap")),
+    "downtrend": (L("进入“下行 50 日均线下方”状态（加仓暂停条件成立）",
+                    "Entered the 'below a falling 50-day average' state (the no-adding condition applies)"),
+                  L("离开“下行 50 日均线下方”状态", "Left the 'below a falling 50-day average' state")),
+    "panic": (L("出现急跌 + 超卖", "Sharp drop + oversold appeared"),
+              L("急跌 + 超卖状态结束", "Sharp drop + oversold state ended")),
 }
 
 
 def diff(prev: dict | None, cur: dict) -> list[str]:
     if prev is None:
-        return ["新出现在列表中"]
+        return [L("新出现在列表中", "Newly added to the list")]
     out = []
     if prev.get("held") != cur["held"]:
-        out.append("新建仓" if cur["held"] else "已清仓")
+        out.append(L("新建仓", "Position opened") if cur["held"] else L("已清仓", "Position closed"))
     if prev.get("stance") != cur["stance"]:
-        out.append(f"综合信号 {prev.get('stance')} → {cur['stance']}")
+        out.append(L(f"综合信号 {prev.get('stance')} → {cur['stance']}",
+                         f"Composite signal {prev.get('stance')} → {cur['stance']}"))
     if prev.get("range") != cur["range"]:
-        out.append(f"震荡区间 {RANGE_TEXT.get(prev.get('range'), '—')} → {RANGE_TEXT.get(cur['range'], '—')}")
+        out.append(L(f"震荡区间 {RANGE_TEXT.get(prev.get('range'), '—')} → {RANGE_TEXT.get(cur['range'], '—')}",
+                     f"Trading range {RANGE_TEXT.get(prev.get('range'), '—')} → {RANGE_TEXT.get(cur['range'], '—')}"))
     for k, (on, off) in _CHANGE.items():
         if bool(prev.get(k)) != cur[k]:
             out.append(on if cur[k] else off)
@@ -110,11 +123,13 @@ def _item(v, cfg: dict, default_cap: float, last_sell: dict[str, float], today: 
                    stop=v.stop, target=v.target, levels_src=v.levels_src)
     keys: set[str] = set()
     user_cap = (v.plan or {}).get("max_pct")
-    it.cap_pct, it.cap_src = (float(user_cap), "你设定的") if user_cap else (default_cap, "默认")
+    it.cap_pct, it.cap_src = (float(user_cap), L("你设定的", "your own")) if user_cap else (default_cap, L("默认", "default"))
     if not a or not a.ok or _nan(v.price):
         it.has_data = False
         if v.qty:
-            it.flags.append(("warn", "没有取到这只股票的行情 / 历史数据，信号和参考位都无法计算。"))
+            it.flags.append(("warn", L("没有取到这只股票的行情 / 历史数据，信号和参考位都无法计算。",
+                                         "No price / history data could be fetched for this stock, so signals and "
+                                         "reference levels cannot be computed.")))
     else:
         it.stance, it.composite = a.stance, a.composite
         rg = a.range
@@ -127,36 +142,48 @@ def _item(v, cfg: dict, default_cap: float, last_sell: dict[str, float], today: 
         if down:
             keys.add("downtrend")
             if v.qty:
-                it.flags.append(("warn", f"股价在下行的 50 日均线（{i['sma50']:.2f}）下方："
-                                         "“下跌趋势中不加仓”这条规则的条件成立。"))
+                it.flags.append(("warn", L(f"股价在下行的 50 日均线（{i['sma50']:.2f}）下方："
+                                                   "“下跌趋势中不加仓”这条规则的条件成立。",
+                                                   f"The price is below the falling 50-day average ({i['sma50']:.2f}): "
+                                                   "the condition of your 'no adding in a downtrend' rule applies.")))
         chg5, rsi = i.get("chg_5d"), i.get("rsi")
         if not _nan(chg5) and not _nan(rsi) and chg5 * 100 <= -cfg["panic_drop_pct"] and rsi <= cfg["panic_rsi"]:
             keys.add("panic")
-            it.flags.append(("warn", f"5 日跌幅 {chg5*100:.1f}%、RSI {rsi:.0f}（超卖）："
-                                     "“急跌时先等一天再决定”这条规则的条件成立。"))
+            it.flags.append(("warn", L(f"5 日跌幅 {chg5*100:.1f}%、RSI {rsi:.0f}（超卖）："
+                                               "“急跌时先等一天再决定”这条规则的条件成立。",
+                                               f"5-day change {chg5*100:.1f}%, RSI {rsi:.0f} (oversold): "
+                                               "the condition of your 'wait a day after a sharp drop' rule applies.")))
         if rg is not None and rg.status in ("buy", "sell", "breakout_up", "breakdown"):
             lvl = "warn" if rg.status == "breakdown" else "info"
-            it.flags.append((lvl, f"震荡区间：{it.range_label}（支撑 {rg.support:.2f} / 阻力 {rg.resistance:.2f}）。"))
+            it.flags.append((lvl, L(f"震荡区间：{it.range_label}（支撑 {rg.support:.2f} / 阻力 {rg.resistance:.2f}）。",
+                                    f"Trading range: {it.range_label} (support {rg.support:.2f} / resistance {rg.resistance:.2f}).")))
     if v.qty and not _nan(v.price):
-        src = "你设定的" if v.levels_src == "user" else "按 ATR 估算的"
+        src = L("你设定的", "your own") if v.levels_src == "user" else L("按 ATR 估算的", "ATR-estimated")
         if v.stop:
             it.stop_dist_pct = (v.price / v.stop - 1) * 100
             if v.price < v.stop:
                 keys.add("below_stop")
-                it.flags.append(("high", f"现价 {v.price:.2f} 低于{src}止损参考位 {v.stop:.2f}。"))
+                it.flags.append(("high", L(f"现价 {v.price:.2f} 低于{src}止损参考位 {v.stop:.2f}。",
+                                          f"Price {v.price:.2f} is below the {src} stop reference {v.stop:.2f}.")))
         if v.target and v.price >= v.target:
             keys.add("at_target")
-            it.flags.append(("info", f"现价 {v.price:.2f} 已到达{src}目标参考位 {v.target:.2f}。"))
+            it.flags.append(("info", L(f"现价 {v.price:.2f} 已到达{src}目标参考位 {v.target:.2f}。",
+                                         f"Price {v.price:.2f} has reached the {src} target reference {v.target:.2f}.")))
         if v.weight * 100 > it.cap_pct:
             keys.add("over_cap")
-            it.flags.append(("warn", f"占组合 {v.weight*100:.1f}%，超过{it.cap_src}单只上限 {it.cap_pct:g}%。"))
+            it.flags.append(("warn", L(f"占组合 {v.weight*100:.1f}%，超过{it.cap_src}单只上限 {it.cap_pct:g}%。",
+                                          f"{v.weight*100:.1f}% of the portfolio, above the per-stock cap "
+                                          f"({it.cap_src}) of {it.cap_pct:g}%.")))
     ts = last_sell.get(v.symbol)
     if ts:
         sold = datetime.fromtimestamp(ts).date()
         n = int(np.busday_count(sold, today))
         if 0 <= n < cfg["cooloff_days"]:
-            it.flags.append(("info", f"{sold:%m-%d} 卖出过，“卖出后 {cfg['cooloff_days']} 个交易日内不追高买回”"
-                                     f"的冷静期还剩 {cfg['cooloff_days'] - n} 个交易日。"))
+            it.flags.append(("info", L(f"{sold:%m-%d} 卖出过，“卖出后 {cfg['cooloff_days']} 个交易日内不追高买回”"
+                                               f"的冷静期还剩 {cfg['cooloff_days'] - n} 个交易日。",
+                                               f"Sold on {sold:%m-%d}; the cooling-off period of your 'no chasing "
+                                               f"back in within {cfg['cooloff_days']} trading days of a sale' rule "
+                                               f"has {cfg['cooloff_days'] - n} trading days left.")))
     return it, keys
 
 
@@ -200,7 +227,7 @@ def build(snap, store=None, cfg: dict | None = None, default_cap: float = 25.0,
                 b.changes.extend((it.symbol, ch) for ch in it.changes)
             for sym, st in prev.items():
                 if sym not in states and st.get("held"):
-                    b.changes.append((sym, "已不在持仓 / 自选中"))
+                    b.changes.append((sym, L("已不在持仓 / 自选中", "No longer in holdings / watchlist")))
         hist[b.day] = states
         for d in sorted(hist)[: -int(c["keep_days"])]:
             hist.pop(d, None)
@@ -222,8 +249,12 @@ def build(snap, store=None, cfg: dict | None = None, default_cap: float = 25.0,
                                     "delta_shares": float(r["delta_shares"])})
         missing = [v.symbol for v in snap.tickers if v.value > 0 and v.symbol not in opt.symbols]
         if missing:
-            b.notes.append(f"{'、'.join(missing)} 的历史数据不足，没有参与参考配置的计算（差额只在其余股票之间算）。")
+            b.notes.append(L(f"{'、'.join(missing)} 的历史数据不足，没有参与参考配置的计算（差额只在其余股票之间算）。",
+                             f"Not enough history for {', '.join(missing)}, so they were left out of the reference "
+                             f"allocation (the differences are computed among the remaining stocks only)."))
 
     if b.prev_month_trades and b.month_trades > b.prev_month_trades * 1.5 and b.month_trades >= 8:
-        b.notes.append(f"本月已成交 {b.month_trades} 笔，明显多于上月的 {b.prev_month_trades} 笔。")
+        b.notes.append(L(f"本月已成交 {b.month_trades} 笔，明显多于上月的 {b.prev_month_trades} 笔。",
+                         f"{b.month_trades} trades so far this month, clearly more than last month's "
+                         f"{b.prev_month_trades}."))
     return b

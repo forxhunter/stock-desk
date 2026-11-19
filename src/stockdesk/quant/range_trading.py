@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 
+from ..i18n import L
 from . import indicators as ind
 
 DEFAULTS: dict = {
@@ -183,7 +184,7 @@ def strat_range(bars: pd.DataFrame, **over) -> pd.Series:
 @dataclass
 class RangeState:
     status: str = "none"     # buy | sell | mid | breakout_up | breakdown | loose | none | short
-    label: str = "数据不足"
+    label: str = L("数据不足", "No data")
     detail: str = ""
     score: float = 0.0       # colour hint only: +1 near support, -1 near resistance
     support: float = float("nan")
@@ -209,16 +210,24 @@ class RangeState:
 def _why_not(row: pd.Series, p: dict) -> list[str]:
     out = []
     if row["er"] > p["max_er"]:
-        out.append(f"走势效率 {row['er']:.2f} > {p['max_er']:.2f}（价格在单边运行，不是来回震荡）")
+        out.append(L(f"走势效率 {row['er']:.2f} > {p['max_er']:.2f}（价格在单边运行，不是来回震荡）",
+                     f"Efficiency ratio {row['er']:.2f} > {p['max_er']:.2f} (price is trending one way, not moving back and forth)"))
     if row["drift"] > p["max_drift"]:
-        out.append(f"区间倾斜：{int(p['lookback'])} 日回归漂移占区间宽度 {row['drift']*100:.0f}% > {p['max_drift']*100:.0f}%")
+        out.append(L(f"区间倾斜：{int(p['lookback'])} 日回归漂移占区间宽度 {row['drift']*100:.0f}% > {p['max_drift']*100:.0f}%",
+                     f"Range is tilted: the {int(p['lookback'])}-day regression drift is {row['drift']*100:.0f}% "
+                     f"of the range width > {p['max_drift']*100:.0f}%"))
     if row["width_atr"] > p["max_width_atr"]:
-        out.append(f"区间太宽（{row['width_atr']:.1f}×ATR > {p['max_width_atr']:g}），更像一段趋势")
+        out.append(L(f"区间太宽（{row['width_atr']:.1f}×ATR > {p['max_width_atr']:g}），更像一段趋势",
+                     f"Range too wide ({row['width_atr']:.1f}×ATR > {p['max_width_atr']:g}); looks more like a trend leg"))
     if row["width_atr"] < p["min_width_atr"] or row["width_pct"] < p["min_width_pct"]:
-        out.append(f"区间太窄（{row['width_pct']:.1f}%、{row['width_atr']:.1f}×ATR），扣除成本后没有操作空间")
+        out.append(L(f"区间太窄（{row['width_pct']:.1f}%、{row['width_atr']:.1f}×ATR），扣除成本后没有操作空间",
+                     f"Range too narrow ({row['width_pct']:.1f}%, {row['width_atr']:.1f}×ATR); "
+                     f"no room to trade after costs"))
     if row["touch_lo"] < p["min_touches"] or row["touch_hi"] < p["min_touches"]:
-        out.append(f"上下沿测试次数不足（下沿 {int(row['touch_lo'])} 次 / 上沿 {int(row['touch_hi'])} 次，"
-                   f"各需 ≥{int(p['min_touches'])}）")
+        out.append(L(f"上下沿测试次数不足（下沿 {int(row['touch_lo'])} 次 / 上沿 {int(row['touch_hi'])} 次，"
+                     f"各需 ≥{int(p['min_touches'])}）",
+                     f"Too few tests of the edges (lower {int(row['touch_lo'])} / upper {int(row['touch_hi'])}, "
+                     f"each needs ≥{int(p['min_touches'])})"))
     return out
 
 
@@ -227,7 +236,7 @@ def range_state(bars: pd.DataFrame, p: dict | None = None, price: float | None =
     st = RangeState(params=p)
     n = int(p["lookback"])
     if bars is None or len(bars) < n + 2:
-        st.detail = f"需要至少 {n + 2} 个交易日的数据。"
+        st.detail = L(f"需要至少 {n + 2} 个交易日的数据。", f"Needs at least {n + 2} trading days of data.")
         st.status = "short"
         return st
     f = range_frame(bars, p)
@@ -253,10 +262,13 @@ def range_state(bars: pd.DataFrame, p: dict | None = None, price: float | None =
     z, brk = float(p["zone"]), float(p["break_atr"])
 
     if ref is None:
-        st.status, st.label, st.score = "none", "非震荡（不适用）", 0.0
+        st.status, st.label, st.score = "none", L("非震荡（不适用）", "Not ranging (n/a)"), 0.0
         st.reasons = _why_not(row, p)
-        st.detail = (f"最近 {n} 个交易日不满足横盘条件，高抛低吸规则不适用。"
-                     + ("原因：" + "；".join(st.reasons) + "。" if st.reasons else ""))
+        st.detail = L(f"最近 {n} 个交易日不满足横盘条件，高抛低吸规则不适用。"
+                      + ("原因：" + "；".join(st.reasons) + "。" if st.reasons else ""),
+                      f"The last {n} trading days do not meet the sideways conditions; "
+                      f"the buy-low / sell-high rule does not apply."
+                      + (" Reasons: " + "; ".join(st.reasons) + "." if st.reasons else ""))
         return st
 
     k = ref
@@ -268,33 +280,57 @@ def range_state(bars: pd.DataFrame, p: dict | None = None, price: float | None =
     st.sell_band = (st.resistance - z * w, st.resistance)
     st.stop = st.support - brk * st.atr
     st.breakout = st.resistance + brk * st.atr
-    lv = f"支撑 {st.support:.2f} / 阻力 {st.resistance:.2f}（宽 {st.width_pct:.1f}%）"
+    lv = L(f"支撑 {st.support:.2f} / 阻力 {st.resistance:.2f}（宽 {st.width_pct:.1f}%）",
+           f"support {st.support:.2f} / resistance {st.resistance:.2f} (width {st.width_pct:.1f}%)")
 
     if px > st.breakout:
-        st.status, st.label, st.score = "breakout_up", "向上突破区间", 0.3
-        st.detail = (f"收盘 {px:.2f} 已高于阻力 {st.resistance:.2f} 超过 {brk:g}×ATR，原区间（{lv}）失效。"
-                     "高抛低吸规则停止使用；突破是否有效需要看后续几天能否站稳，回落到区间内则视为假突破。")
+        st.status, st.label, st.score = "breakout_up", L("向上突破区间", "Breakout above range"), 0.3
+        st.detail = L(f"收盘 {px:.2f} 已高于阻力 {st.resistance:.2f} 超过 {brk:g}×ATR，原区间（{lv}）失效。"
+                      "高抛低吸规则停止使用；突破是否有效需要看后续几天能否站稳，回落到区间内则视为假突破。",
+                      f"Close {px:.2f} is above resistance {st.resistance:.2f} by more than {brk:g}×ATR; "
+                      f"the original range ({lv}) is no longer valid. "
+                      "The buy-low / sell-high rule stops being used; whether the breakout holds depends on whether "
+                      "price stays above in the next few days, and a fall back into the range counts as a false breakout.")
     elif px < st.stop:
-        st.status, st.label, st.score = "breakdown", "向下跌破区间", -0.8
-        st.detail = (f"收盘 {px:.2f} 已低于支撑 {st.support:.2f} 超过 {brk:g}×ATR，原区间（{lv}）失效。"
-                     "按这条规则，持有的低吸仓位应在此止损，且不再低吸。")
+        st.status, st.label, st.score = "breakdown", L("向下跌破区间", "Breakdown below range"), -0.8
+        st.detail = L(f"收盘 {px:.2f} 已低于支撑 {st.support:.2f} 超过 {brk:g}×ATR，原区间（{lv}）失效。"
+                      "按这条规则，持有的低吸仓位应在此止损，且不再低吸。",
+                      f"Close {px:.2f} is below support {st.support:.2f} by more than {brk:g}×ATR; "
+                      f"the original range ({lv}) is no longer valid. "
+                      "Under this rule, a position bought low would be stopped out here, with no further buying low.")
     elif ref != last:
-        st.status, st.label, st.score = "loose", "区间松动", 0.0
-        st.detail = (f"{last - ref} 个交易日前还满足横盘条件（{lv}），现在价格仍在区间内但条件已不满足"
-                     f"（{'；'.join(_why_not(f.iloc[last], p)) or '指标在临界值附近'}）。暂停新的低吸，已持有的按原区间管理。")
+        st.status, st.label, st.score = "loose", L("区间松动", "Range loosening"), 0.0
+        why = L("；", "; ").join(_why_not(f.iloc[last], p)) or L("指标在临界值附近", "indicators are near their thresholds")
+        st.detail = L(f"{last - ref} 个交易日前还满足横盘条件（{lv}），现在价格仍在区间内但条件已不满足"
+                      f"（{why}）。暂停新的低吸，已持有的按原区间管理。",
+                      f"{last - ref} trading days ago the sideways conditions were still met ({lv}); price is still "
+                      f"inside the range but the conditions no longer hold ({why}). "
+                      f"New buy-low entries are paused; positions already held are managed against the original range.")
     elif st.pos <= z:
-        st.status, st.label, st.score = "buy", "接近支撑（低吸区）", 0.6
-        st.detail = (f"横盘已持续 {st.days} 天，{lv}。现价 {px:.2f} 位于区间 {st.pos*100:.0f}% 处，"
-                     f"处于下沿 {z*100:.0f}% 的低吸区 {st.buy_band[0]:.2f}–{st.buy_band[1]:.2f}。"
-                     f"规则的失效位（止损参考）{st.stop:.2f}，目标是高抛区 {st.sell_band[0]:.2f} 以上。")
+        st.status, st.label, st.score = "buy", L("接近支撑（低吸区）", "Near support (buy zone)"), 0.6
+        st.detail = L(f"横盘已持续 {st.days} 天，{lv}。现价 {px:.2f} 位于区间 {st.pos*100:.0f}% 处，"
+                      f"处于下沿 {z*100:.0f}% 的低吸区 {st.buy_band[0]:.2f}–{st.buy_band[1]:.2f}。"
+                      f"规则的失效位（止损参考）{st.stop:.2f}，目标是高抛区 {st.sell_band[0]:.2f} 以上。",
+                      f"Sideways for {st.days} days, {lv}. Price {px:.2f} is at {st.pos*100:.0f}% of the range, "
+                      f"in the buy zone {st.buy_band[0]:.2f}–{st.buy_band[1]:.2f} (bottom {z*100:.0f}%). "
+                      f"The rule's invalidation level (stop reference) is {st.stop:.2f}; "
+                      f"the target is the sell zone from {st.sell_band[0]:.2f} up.")
     elif st.pos >= 1 - z:
-        st.status, st.label, st.score = "sell", "接近阻力（高抛区）", -0.6
-        st.detail = (f"横盘已持续 {st.days} 天，{lv}。现价 {px:.2f} 位于区间 {st.pos*100:.0f}% 处，"
-                     f"处于上沿 {z*100:.0f}% 的高抛区 {st.sell_band[0]:.2f}–{st.sell_band[1]:.2f}。"
-                     f"若收盘站上 {st.breakout:.2f}（阻力 + {brk:g}×ATR）则视为向上突破，区间作废。")
+        st.status, st.label, st.score = "sell", L("接近阻力（高抛区）", "Near resistance (sell zone)"), -0.6
+        st.detail = L(f"横盘已持续 {st.days} 天，{lv}。现价 {px:.2f} 位于区间 {st.pos*100:.0f}% 处，"
+                      f"处于上沿 {z*100:.0f}% 的高抛区 {st.sell_band[0]:.2f}–{st.sell_band[1]:.2f}。"
+                      f"若收盘站上 {st.breakout:.2f}（阻力 + {brk:g}×ATR）则视为向上突破，区间作废。",
+                      f"Sideways for {st.days} days, {lv}. Price {px:.2f} is at {st.pos*100:.0f}% of the range, "
+                      f"in the sell zone {st.sell_band[0]:.2f}–{st.sell_band[1]:.2f} (top {z*100:.0f}%). "
+                      f"A close above {st.breakout:.2f} (resistance + {brk:g}×ATR) counts as an upward breakout "
+                      f"and voids the range.")
     else:
-        st.status, st.label, st.score = "mid", "区间中部（观望）", 0.0
-        st.detail = (f"横盘已持续 {st.days} 天，{lv}。现价 {px:.2f} 位于区间 {st.pos*100:.0f}% 处，"
-                     f"不在两端，高抛低吸规则没有动作。低吸区 {st.buy_band[0]:.2f}–{st.buy_band[1]:.2f}，"
-                     f"高抛区 {st.sell_band[0]:.2f}–{st.sell_band[1]:.2f}。")
+        st.status, st.label, st.score = "mid", L("区间中部（观望）", "Mid-range (wait)"), 0.0
+        st.detail = L(f"横盘已持续 {st.days} 天，{lv}。现价 {px:.2f} 位于区间 {st.pos*100:.0f}% 处，"
+                      f"不在两端，高抛低吸规则没有动作。低吸区 {st.buy_band[0]:.2f}–{st.buy_band[1]:.2f}，"
+                      f"高抛区 {st.sell_band[0]:.2f}–{st.sell_band[1]:.2f}。",
+                      f"Sideways for {st.days} days, {lv}. Price {px:.2f} is at {st.pos*100:.0f}% of the range, "
+                      f"not near either edge, so the buy-low / sell-high rule takes no action. "
+                      f"Buy zone {st.buy_band[0]:.2f}–{st.buy_band[1]:.2f}, "
+                      f"sell zone {st.sell_band[0]:.2f}–{st.sell_band[1]:.2f}.")
     return st

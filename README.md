@@ -4,15 +4,17 @@
 
 It sits on the edge of your screen, syncs your positions from IBKR or a Robinhood report, and tells you *why* it shows each signal: the inputs, the rule, and how that rule did in a backtest. It cannot trade: there is no order code in the repository, and a test fails the build if any appears.
 
-[中文说明](README.zh-CN.md) · the interface is currently in Chinese
+English and Chinese interface · [中文说明](README.zh-CN.md)
 
-![Desktop widget](assets/screenshot-widget.png)
+![Desktop widget: positions, day change, stop-to-target progress, composite signal](assets/en/widget.png)
 
-![Unusual-activity scan: Polymarket large bets and unusual option volume, each with the rule it tripped](assets/screenshot-scan.png)
+![Unusual-activity scan: Polymarket large bets and unusual option volume, each with the rule it tripped](assets/en/scan.png)
 
-![Ticker detail: chart, signal breakdown, risk levels, backtests](assets/screenshot-detail.png)
+![Ticker detail: chart, signal breakdown, risk levels, backtests](assets/en/detail.png)
 
-*The widget and detail screenshots show the built-in demo holdings; the scan shows public market data.*
+![Daily briefing: position status, rule checks, what changed](assets/en/briefing.png)
+
+*Holdings in the screenshots are the built-in demo data; quotes and the scan are public market data.*
 
 ## What it does
 
@@ -59,7 +61,9 @@ setup.bat
 StockDesk.bat
 ```
 
-`setup.bat` creates a local `.venv` and installs the dependencies; nothing is installed globally. The first start is **demo mode**: real Yahoo quotes with sample holdings, no account needed. Edit `watchlist.yaml` with your own tickers, or connect a broker under *分析中心 → 数据源与设置*.
+`setup.bat` creates a local `.venv` and installs the dependencies; nothing is installed globally. The first start is **demo mode**: real Yahoo quotes with sample holdings, no account needed. Edit `watchlist.yaml` with your own tickers, or connect a broker under *Analysis hub → Sources & settings*.
+
+The interface follows your system language (English or Chinese). To choose one, use the language box on the settings page, set `app.language: en` or `zh` in `data/config.yaml`, or start with the environment variable `STOCKDESK_LANG=en`. Alert mails use the same language.
 
 Run the tests with `.venv\Scripts\python.exe -m pytest -q`.
 
@@ -96,7 +100,7 @@ The first command installs the headless runner and a 10-minute cron job. The sec
 
 ## Limits worth knowing
 
-- The interface is in Chinese. Windows 11 only for the desktop widget; the headless runner works on Linux.
+- Windows 11 only for the desktop widget; the headless runner works on Linux. The comments in `config.default.yaml` are in Chinese.
 - Yahoo data can be delayed by about 15 minutes and is occasionally rate-limited. Option volume is the day's running total, and it does not show whether the buyer or the seller initiated the trade.
 - IBKR Flex and the Robinhood report import have been used against real accounts. The TWS, Client Portal and unofficial Robinhood adapters are covered only by mocked tests.
 - The backtests use general default parameters and small samples. A large bet or a volume spike is a reason to look, not a conclusion.

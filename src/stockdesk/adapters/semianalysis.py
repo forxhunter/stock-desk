@@ -13,6 +13,7 @@ import re
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
+from ..i18n import L
 from ..models import NewsItem
 from .base import AdapterError, HttpGet, ResearchAdapter, http_get
 
@@ -56,7 +57,7 @@ def parse_feed(xml_bytes: bytes, source: str, matchers: dict[str, re.Pattern],
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError:
-        raise AdapterError("RSS 无法解析") from None
+        raise AdapterError(L("RSS 无法解析", "The RSS feed could not be parsed")) from None
     items: list[NewsItem] = []
     for node in root.iter("item"):
         title = strip_html(node.findtext("title") or "")

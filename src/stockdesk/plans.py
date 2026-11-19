@@ -13,10 +13,11 @@ from pathlib import Path
 import yaml
 
 from . import paths
+from .i18n import L
 
 PLAN_PATH_NAME = "plans.yaml"
 
-TEMPLATE = """# 我的计划（本文件不进 git）。数字由你自己填，程序只负责每天对照、提醒，不会替你做决定，也不会下单。
+TEMPLATE = L("""# 我的计划（本文件不进 git）。数字由你自己填，程序只负责每天对照、提醒，不会替你做决定，也不会下单。
 # 留空（null / []）的项目，简报里会显示“未填写”。改完保存，下次刷新生效。
 plans:
   {symbol}:
@@ -29,7 +30,20 @@ plans:
     no_add: true                # 计划期间不再加仓
     review_days: 30             # 每隔多少天复查一次计划
     notes: ""                   # 写给自己的话：为什么持有、什么情况下认错
-"""
+""", """# My plans (this file is not tracked by git). You fill in the numbers; the program only compares and reminds you each day. It makes no decisions for you and places no orders.
+# Items left empty (null / []) show as "not filled in" in the briefing. Save after editing; it takes effect on the next refresh.
+plans:
+  {symbol}:
+    start: {start}            # plan start date
+    end: {end}              # plan end date (six months)
+    start_weight_pct: {weight}    # share of the portfolio at the start (recorded by the program, you can change it)
+    target_weight_pct: null     # what % of the portfolio you want it down to by the end date
+    exit_below: null            # your bottom-line price: if the close falls below it, handle it the way you decided in advance ({currency})
+    reduce_above: []            # your own staged trim levels, e.g. [900, 1000, 1100] ({currency})
+    no_add: true                # no adding during the plan period
+    review_days: 30             # review the plan every this many days
+    notes: ""                   # a note to yourself: why you hold it, when you would admit a mistake
+""")
 
 
 def plan_path() -> Path:
@@ -164,8 +178,11 @@ def status(symbol: str, plan: dict, *, price: float, weight_pct: float, qty: flo
     filled = bool(st.buy_levels or st.target_price or st.max_weight_pct)
     building = st.building = kind == "build" or (filled and kind != "reduce")
     if building and not filled:
-        st.missing += ["分批买入价位", "目标价", "仓位上限"]
-    for key, label in (("target_weight_pct", "目标占比"), ("exit_below", "底线价"), ("reduce_above", "分批减仓价位")):
+        st.missing += [L("分批买入价位", "staged buy levels"), L("目标价", "target price"),
+                       L("仓位上限", "position cap")]
+    for key, label in (("target_weight_pct", L("目标占比", "target weight")),
+                       ("exit_below", L("底线价", "bottom-line price")),
+                       ("reduce_above", L("分批减仓价位", "staged trim levels"))):
         if not plan.get(key) and not building:
             st.missing.append(label)
 
@@ -174,16 +191,18 @@ def status(symbol: str, plan: dict, *, price: float, weight_pct: float, qty: flo
     if st.follow:
         st.follow_name, st.level_ccy, st.to_local = follow_name or st.follow, follow_ccy, to_local
         px = follow_price if follow_price is not None else float("nan")
-        who = f"{st.follow_name}（{st.follow}）" if st.follow_name != st.follow else st.follow
-        mine = f"你在 {symbol} 计划里"
+        who = (L(f"{st.follow_name}（{st.follow}）", f"{st.follow_name} ({st.follow})")
+               if st.follow_name != st.follow else st.follow)
+        mine = L(f"你在 {symbol} 计划里", f"your {symbol} plan")
         if px != px:
-            st.flags.append(("warn", f"没有取到 {who} 的行情，计划里的价位暂时无法检查。"))
+            st.flags.append(("warn", L(f"没有取到 {who} 的行情，计划里的价位暂时无法检查。",
+                                       f"No price data for {who}; the levels in the plan cannot be checked for now.")))
     else:
         st.level_ccy = ccy
-        px, who, mine = price, symbol, "你在计划里"
+        px, who, mine = price, symbol, L("你在计划里", "your plan")
     st.check_price = px
     unit = f" {st.level_ccy}" if st.follow and st.level_ccy else ""
-    tag = f"{symbol}（按 {st.follow}）" if st.follow else symbol
+    tag = L(f"{symbol}（按 {st.follow}）", f"{symbol} (by {st.follow})") if st.follow else symbol
 
     if st.start and st.end and st.end > st.start:
         st.days_total = (st.end - st.start).days
@@ -197,55 +216,79 @@ def status(symbol: str, plan: dict, *, price: float, weight_pct: float, qty: flo
             f = st.days_done / st.days_total
             st.path_weight_pct = st.start_weight_pct + (st.target_weight_pct - st.start_weight_pct) * f
             if st.held and weight_pct > st.path_weight_pct + 2.0 and st.target_weight_pct < st.start_weight_pct:
-                st.flags.append(("warn", f"当前占比 {weight_pct:.1f}%，高于按时间均匀推进到今天的 {st.path_weight_pct:.1f}%"
-                                         f"（从 {st.start_weight_pct:g}% 到 {st.target_weight_pct:g}% 的直线）。"))
+                st.flags.append(("warn", L(f"当前占比 {weight_pct:.1f}%，高于按时间均匀推进到今天的 {st.path_weight_pct:.1f}%"
+                                           f"（从 {st.start_weight_pct:g}% 到 {st.target_weight_pct:g}% 的直线）。",
+                                           f"Current weight {weight_pct:.1f}% is above {st.path_weight_pct:.1f}%, "
+                                           f"where an even schedule would put it today "
+                                           f"(a straight line from {st.start_weight_pct:g}% to {st.target_weight_pct:g}%).")))
         if today > st.end:
-            st.flags.append(("warn", "计划已到结束日，请复盘并决定是否写新的计划。"))
+            st.flags.append(("warn", L("计划已到结束日，请复盘并决定是否写新的计划。",
+                                       "The plan has reached its end date; review it and decide whether to write a new one.")))
         elif st.review_due:
-            st.flags.append(("info", "今天是你设定的复查日。"))
+            st.flags.append(("info", L("今天是你设定的复查日。", "Today is a review day you set.")))
     else:
-        st.missing.append("起止日期")
+        st.missing.append(L("起止日期", "start and end dates"))
     if px == px:      # not NaN
-        now = f"{who} 现价 {fmt_px(px)}{unit}"
+        now = L(f"{who} 现价 {fmt_px(px)}{unit}", f"{who} price {fmt_px(px)}{unit}")
         if st.exit_below and px < st.exit_below:
-            text = f"{now}，低于{mine}写下的底线价 {fmt(st.exit_below)}。"
+            text = L(f"{now}，低于{mine}写下的底线价 {fmt(st.exit_below)}。",
+                     f"{now}, below the bottom-line price of {fmt(st.exit_below)} written in {mine}.")
             st.flags.append(("high", text))
-            st.events.append(("exit", st.exit_below, f"跌破你的底线价：{tag}", text))
+            st.events.append(("exit", st.exit_below,
+                              L(f"跌破你的底线价：{tag}", f"Fell below your bottom-line price: {tag}"), text))
         st.levels_reached = [x for x in st.reduce_levels if px >= x]
         st.next_level = next((x for x in st.reduce_levels if px < x), None)
         if st.levels_reached and st.held:
-            st.flags.append(("info", f"{now}，已到达{mine}写下的减仓价位 "
-                                     f"{' / '.join(fmt(x) for x in st.levels_reached)}。"))
+            st.flags.append(("info", L(f"{now}，已到达{mine}写下的减仓价位 "
+                                       f"{' / '.join(fmt(x) for x in st.levels_reached)}。",
+                                       f"{now}, has reached the trim level written in {mine}: "
+                                       f"{' / '.join(fmt(x) for x in st.levels_reached)}.")))
             for x in st.levels_reached:
-                st.events.append(("reduce", x, f"到达你的减仓价位：{tag}",
-                                  f"{now}，已到达{mine}写下的减仓价位 {fmt(x)}。"))
+                st.events.append(("reduce", x, L(f"到达你的减仓价位：{tag}", f"Reached your trim level: {tag}"),
+                                  L(f"{now}，已到达{mine}写下的减仓价位 {fmt(x)}。",
+                                    f"{now}, has reached the trim level of {fmt(x)} written in {mine}.")))
         st.buy_reached = [x for x in st.buy_levels if px <= x]
         st.next_buy = next((x for x in st.buy_levels if px > x), None)
         if st.buy_reached:
-            st.flags.append(("info", f"{now}，已到达{mine}写下的买入价位 "
-                                     f"{' / '.join(fmt(x) for x in st.buy_reached)}。"))
+            st.flags.append(("info", L(f"{now}，已到达{mine}写下的买入价位 "
+                                       f"{' / '.join(fmt(x) for x in st.buy_reached)}。",
+                                       f"{now}, has reached the buy level written in {mine}: "
+                                       f"{' / '.join(fmt(x) for x in st.buy_reached)}.")))
             for x in st.buy_reached:
-                st.events.append(("buy", x, f"到达你的买入价位：{tag}",
-                                  f"{now}，已到达{mine}写下的买入价位 {fmt(x)}。"
-                                  "这只是提醒你的计划到了这一步，是否买、买多少由你决定。"))
+                st.events.append(("buy", x, L(f"到达你的买入价位：{tag}", f"Reached your buy level: {tag}"),
+                                  L(f"{now}，已到达{mine}写下的买入价位 {fmt(x)}。"
+                                    "这只是提醒你的计划到了这一步，是否买、买多少由你决定。",
+                                    f"{now}, has reached the buy level of {fmt(x)} written in {mine}. "
+                                    "This only reminds you that your plan has reached this step; whether to buy "
+                                    "and how much is up to you.")))
         if st.target_price and px >= st.target_price:
-            text = f"{now}，已到达{mine}写下的目标价 {fmt(st.target_price)}。"
+            text = L(f"{now}，已到达{mine}写下的目标价 {fmt(st.target_price)}。",
+                     f"{now}, has reached the target price of {fmt(st.target_price)} written in {mine}.")
             st.flags.append(("info", text))
-            st.events.append(("target", st.target_price, f"到达你的目标价：{tag}", text))
+            st.events.append(("target", st.target_price,
+                              L(f"到达你的目标价：{tag}", f"Reached your target price: {tag}"), text))
     if st.max_weight_pct and weight_pct > st.max_weight_pct:
-        st.flags.append(("warn", f"当前占组合 {weight_pct:.1f}%，超过你给这只股票定的仓位上限 {st.max_weight_pct:g}%。"))
+        st.flags.append(("warn", L(f"当前占组合 {weight_pct:.1f}%，超过你给这只股票定的仓位上限 {st.max_weight_pct:g}%。",
+                                   f"Currently {weight_pct:.1f}% of the portfolio, above the position cap of "
+                                   f"{st.max_weight_pct:g}% you set for this stock.")))
     if plan.get("no_add", not building) and st.start:
         t0 = datetime.combine(st.start, datetime.min.time()).timestamp()
         buys = [t for t in trades if t.symbol == symbol and t.side == "BUY" and t.ts >= t0 and not t.demo]
         if buys:
             last = max(buys, key=lambda t: t.ts)
-            st.flags.append(("high", f"计划写的是“期间不加仓”，但开始后有 {len(buys)} 笔买入"
-                                     f"（最近一笔 {datetime.fromtimestamp(last.ts):%m-%d}，{last.qty:g} 股 @ {last.price:.2f}）。"))
+            st.flags.append(("high", L(f"计划写的是“期间不加仓”，但开始后有 {len(buys)} 笔买入"
+                                       f"（最近一笔 {datetime.fromtimestamp(last.ts):%m-%d}，{last.qty:g} 股 @ {last.price:.2f}）。",
+                                       f"The plan says 'no adding during the period', but there have been {len(buys)} "
+                                       f"buys since it started (latest on {datetime.fromtimestamp(last.ts):%m-%d}, "
+                                       f"{last.qty:g} shares @ {last.price:.2f}).")))
     return st
 
 
-HEADER = ("# 我的计划（本文件不进 git）。数字由你自己决定，程序只负责每天对照、提醒，不会替你做决定，也不会下单。\n"
-          "# 可以在这里改，也可以右键股票 → “编辑我的计划…” 在界面里改。\n")
+HEADER = L("# 我的计划（本文件不进 git）。数字由你自己决定，程序只负责每天对照、提醒，不会替你做决定，也不会下单。\n"
+           "# 可以在这里改，也可以右键股票 → “编辑我的计划…” 在界面里改。\n",
+           "# My plans (this file is not tracked by git). The numbers are your own decisions; the program only compares "
+           "and reminds you each day. It makes no decisions for you and places no orders.\n"
+           "# Edit here, or right-click a stock -> 'Edit my plan...' to edit in the interface.\n")
 
 
 def save(symbol: str, fields: dict, path: Path | None = None, today: date | None = None) -> dict:
@@ -267,6 +310,12 @@ def save(symbol: str, fields: dict, path: Path | None = None, today: date | None
     return plan
 
 
+def _zone_text(z) -> str:
+    why = L("一年低点", "1-year low") if z.year_low and z.touches == 1 else L(f"{z.touches} 个转折点", f"{z.touches} turning points")
+    return L(f"{fmt_px(z.level)}（{fmt_px(z.low)}–{fmt_px(z.high)}，{why}）",
+             f"{fmt_px(z.level)} ({fmt_px(z.low)}–{fmt_px(z.high)}, {why})")
+
+
 def reference_levels(v, default_cap: float = 25.0, ref=None, market_only: bool = False) -> list[tuple[str, str]]:
     """Levels the program already computes by fixed, generic rules, shown next to the plan editor.
 
@@ -274,31 +323,38 @@ def reference_levels(v, default_cap: float = 25.0, ref=None, market_only: bool =
     out: list[tuple[str, str]] = []
     px = v.price
     if px == px:
-        out.append(("现价", fmt_px(px)))
+        out.append((L("现价", "Current price"), fmt_px(px)))
     if v.qty and v.avg_cost and not market_only:
-        out.append(("你的平均成本", fmt_px(v.avg_cost)))
+        out.append((L("你的平均成本", "Your average cost"), fmt_px(v.avg_cost)))
     if not market_only:
-        out.append(("当前占组合", f"{v.weight * 100:.1f}%（程序默认的单只上限是 {default_cap:g}%）"))
+        out.append((L("当前占组合", "Current weight in portfolio"),
+                    L(f"{v.weight * 100:.1f}%（程序默认的单只上限是 {default_cap:g}%）",
+                      f"{v.weight * 100:.1f}% (the program's default per-stock cap is {default_cap:g}%)")))
     a = v.analysis
     if a is not None and a.ok:
         i = a.ind
-        for key, label in (("sma50", "50 日均线"), ("sma200", "200 日均线")):
+        for key, label in (("sma50", L("50 日均线", "50-day average")), ("sma200", L("200 日均线", "200-day average"))):
             if i.get(key) == i.get(key) and i.get(key) is not None:
                 out.append((label, fmt_px(i[key])))
-        out.append(("52 周最低 / 最高", f"{fmt_px(i['low_252'])} / {fmt_px(i['high_252'])}"))
-        out.append(("ATR(14)，日均波幅", f"{fmt_px(i['atr'])}（{i['atr_pct'] * 100:.1f}%）"))
+        out.append((L("52 周最低 / 最高", "52-week low / high"), f"{fmt_px(i['low_252'])} / {fmt_px(i['high_252'])}"))
+        out.append((L("ATR(14)，日均波幅", "ATR(14), average daily range"),
+                    L(f"{fmt_px(i['atr'])}（{i['atr_pct'] * 100:.1f}%）",
+                      f"{fmt_px(i['atr'])} ({i['atr_pct'] * 100:.1f}%)")))
         rg = a.range
         if rg is not None and rg.status not in ("short", "none"):
-            out.append((f"最近的震荡区间（{rg.label}）", f"支撑 {fmt_px(rg.support)} / 阻力 {fmt_px(rg.resistance)}"))
+            out.append((L(f"最近的震荡区间（{rg.label}）", f"Latest trading range ({rg.label})"),
+                        L(f"支撑 {fmt_px(rg.support)} / 阻力 {fmt_px(rg.resistance)}",
+                          f"support {fmt_px(rg.support)} / resistance {fmt_px(rg.resistance)}")))
     try:
         from .quant.levels import support_zones
         zones = support_zones(v.bars, None if px != px else px) if getattr(v, "bars", None) is not None else []
     except Exception:
         zones = []
     if zones:
-        out.append(("下方支撑区（一年内波段高低点聚类）", "；".join(
-            f"{fmt_px(z.level)}（{fmt_px(z.low)}–{fmt_px(z.high)}，{'一年低点' if z.year_low and z.touches == 1 else f'{z.touches} 个转折点'}）"
-            for z in zones[:4])))
+        out.append((L("下方支撑区（一年内波段高低点聚类）", "Support zones below (clusters of swing highs / lows over the past year)"),
+                    L("；", "; ").join(_zone_text(z) for z in zones[:4])))
     if ref is not None and ref.implied == ref.implied:
-        out.append((f"{ref.name} 折算价", f"{ref.implied:,.2f}（{ref.ref_asof:%m-%d} 收盘）"))
+        out.append((L(f"{ref.name} 折算价", f"{ref.name} converted price"),
+                    L(f"{ref.implied:,.2f}（{ref.ref_asof:%m-%d} 收盘）",
+                      f"{ref.implied:,.2f} (close of {ref.ref_asof:%m-%d})")))
     return out
