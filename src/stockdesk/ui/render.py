@@ -299,6 +299,12 @@ def congress_html(rep, pal: T.Palette, watch: set[str] | None = None) -> str:
         col = T.AMBER if m.tier == "star" else T.BLUE if m.tier == "good" else T.RED if m.tier == "poor" else T.DIM
         return f'<span style="color:{col}; font-size:8.5pt;"> {esc(cg.TIER[m.tier])}</span>'
 
+    def recent(m) -> str:
+        if not m.recent[0]:
+            return "—"
+        arrow = (f' <span style="color:{T.RED};">↓</span>' if m.trend == "down" else f' <span style="color:{T.GREEN};">↑</span>' if m.trend == "up" else "")
+        return f"{m.recent[1] * 100:.0f}% · {cg.pct(m.recent[2])} ({m.recent[0]}){arrow}"
+
     def names(d: dict) -> str:
         return L("、", ", ").join(esc(n) + tier(rep.score(next((c.who for c in rep.calls if c.member == n), ""))) for n in list(d)[:6]) or "—"
 
@@ -306,12 +312,16 @@ def congress_html(rep, pal: T.Palette, watch: set[str] | None = None) -> str:
     for sym in sorted(watch):
         k = rep.consensus(sym)
         if k["buyers"] or k["sellers"]:
-            rows.append(f"<tr><td {_TD}><b>{esc(sym)}</b></td><td {_TD}>{len(k['buyers'])}{L(' 人：', ': ')}{names(k['buyers'])}</td>"
-                        f"<td {_TD}>{len(k['sellers'])}{L(' 人：', ': ')}{names(k['sellers'])}</td>"
-                        f"<td {_TD} align='right'>{k['net']:+.1f}</td></tr>")
-    out.append(_h(L("你的自选", "Your watchlist"), L("近 90 天按交易日统计 · 加权净值 = 买方评级系数之和 − 卖方之和", "by trade date over the last 90 days · weighted net = sum of buyers' weights − sellers'")))
+            ab, asell = {n: 1 for n in k["acc_buy"]}, {n: 1 for n in k["acc_sell"]}
+            rest = L(f"买 {len(k['buyers']) - len(ab)} 人 / 卖 {len(k['sellers']) - len(asell)} 人",
+                     f"{len(k['buyers']) - len(ab)} bought / {len(k['sellers']) - len(asell)} sold")
+            rows.append(f"<tr><td {_TD}><b>{esc(sym)}</b></td><td {_TD}>{names(ab)}</td><td {_TD}>{names(asell)}</td>"
+                        f"<td {_TD} align='right'>{k['net']:+.1f}</td><td {_TD} align='right' style='color:{T.DIM};'>{rest}</td></tr>")
+    out.append(_h(L("你的自选", "Your watchlist"), L("近 90 天按交易日统计 · 只参考评级偏准以上的议员 · 加权净值 = 这些买方的系数之和 − 卖方之和",
+                                                    "by trade date over the last 90 days · only members rated fairly accurate or better are referred to · weighted net = their buying weights − selling weights")))
     if rows:
-        head = "".join(f"<th {_TH}>{x}</th>" for x in (L("股票", "Stock"), L("买入的议员", "Members buying"), L("卖出的议员", "Members selling"), L("加权净值", "Weighted net")))
+        head = "".join(f"<th {_TH}>{x}</th>" for x in (L("股票", "Stock"), L("买入（评级偏准以上）", "Buying (rated accurate)"), L("卖出（评级偏准以上）", "Selling (rated accurate)"),
+                                                       L("加权净值", "Weighted net"), L("其他议员（不作参考）", "Other members (not referred to)")))
         out.append(f'<table cellspacing="0" width="100%"><tr>{head}</tr>{"".join(rows)}</table>')
     else:
         out.append(_note(L("近 90 天没有议员申报买卖你自选里的股票。", "No member has reported trading a stock on your watchlist in the last 90 days.")))
@@ -321,7 +331,8 @@ def congress_html(rep, pal: T.Palette, watch: set[str] | None = None) -> str:
     if top:
         head = "".join(f"<th {_TH} align='{'left' if n < 2 else 'right'}'>{x}</th>" for n, x in enumerate(
             (L("议员", "Member"), L("评级", "Rating"), L("可评估 / 全部", "Judged / all"), L("方向正确", "Right"), L("95% 区间", "95% interval"),
-             L("平均超额", "Avg excess"), L("买入", "Purchases"), L("卖出", "Sales"), L("披露后才跟", "Following after disclosure"), L("最近申报", "Last report"))))
+             L("平均超额", "Avg excess"), L("买入", "Purchases"), L("卖出", "Sales"), L("披露后才跟", "Following after disclosure"),
+             L("近期表现", "Recent form"), L("最近申报", "Last report"))))
         body = []
         for m in top:
             ci = f"{m.ci[0] * 100:.0f}–{m.ci[1] * 100:.0f}%" if m.ci else "—"
@@ -331,13 +342,22 @@ def congress_html(rep, pal: T.Palette, watch: set[str] | None = None) -> str:
                         f"<td {_TD} align='right'>{m.hit_rate * 100:.0f}%</td><td {_TD} align='right'>{ci}</td>"
                         f"<td {_TD} align='right'>{cg.pct(m.mean)}</td>"
                         f"<td {_TD} align='right'>{cg.pct(m.buys[1])} ({m.buys[0]})</td><td {_TD} align='right'>{cg.pct(m.sells[1])} ({m.sells[0]})</td>"
-                        f"<td {_TD} align='right'>{fo}</td><td {_TD} align='right'>{esc(m.last_filed[5:])}</td></tr>")
+                        f"<td {_TD} align='right'>{fo}</td><td {_TD} align='right'>{recent(m)}</td>"
+                        f"<td {_TD} align='right'>{esc(m.last_filed[5:])}</td></tr>")
         out.append(f'<table cellspacing="0" width="100%"><tr>{head}</tr>{"".join(body)}</table>')
-        out.append(_note(L("“平均超额”都是带方向的：正数表示判断对了（买入后跑赢，或卖出后跑输）。括号里是笔数。“披露后才跟”是从披露后的下一个交易日算起，"
+        out.append(_note(L(f"评级按最近 {rep.window_days} 天的交易滚动计算，每次扫描都重算；“近期表现”只看近 {rep.recent_days} 天的交易、按 {rep.short} 个交易日评估，"
+                           "近期转差（↓）的会被下调一级，近期明显转好（↑）的会被上调。只有评级偏准以上的议员会触发提醒、计入加权。"
+                           "“平均超额”都是带方向的：正数表示判断对了（买入后跑赢，或卖出后跑输），括号里是笔数；“披露后才跟”从披露后的下一个交易日算起，"
                            "也就是读申报的人实际能拿到的结果。几百名议员里总有人因为运气上榜。",
-                           "Every 'average excess' is signed: positive means the call was right (a purchase that beat the market, or a sale that lagged it). "
-                           "Counts are in brackets. 'Following after disclosure' starts on the session after the report, which is what a reader could "
-                           "actually have had. Among several hundred members some make this list by luck.")))
+                           f"Ratings roll over the trades of the last {rep.window_days} days and are recomputed on every scan; 'recent form' looks only at the trades of the "
+                           f"last {rep.recent_days} days, judged at {rep.short} sessions: a record that has turned worse (↓) is moved down a tier, one that has clearly "
+                           "improved (↑) is moved up. Only members rated fairly accurate or better raise alerts and carry weight. "
+                           "Every 'average excess' is signed: positive means the call was right (a purchase that beat the market, or a sale that lagged it); counts are "
+                           "in brackets. 'Following after disclosure' starts on the session after the report, which is what a reader could actually have had. "
+                           "Among several hundred members some make this list by luck.")))
+        if rep.changes:
+            out.append(_h(L("评级变动", "Rating changes"), L("新的在前", "newest first")))
+            out.append("".join(f'<p style="margin:2px 0 2px 10px;">{esc(cg.change_text(c))}</p>' for c in rep.changes[:12]))
     else:
         out.append(_note(L("还没有满足评估条件的交易。", "No trades can be judged yet.")))
 

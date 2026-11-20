@@ -27,7 +27,8 @@ from .behavior.demo import make_demo_trades
 from .config import Config
 from .i18n import L
 from .models import Alert, BrokerData, MarketOdds, NewsItem, Position, Trade
-from .quant import keylevels, optimizer
+from .quant import keylevels, optimizer, stopfall
+from .quant import range_trading as rt
 from .quant.analysis import Analysis, analyze
 from .quant.bottom import LABELS as bottom_labels
 from .quant.bottom import BottomState, bottom_state
@@ -141,6 +142,7 @@ class Engine:
         self._idx_past: dict[tuple, keylevels.IndexState | None] = {}
         self._building: Snapshot | None = None
         self._cg: congress.CongressReport | None = None
+        self._sf_cache: dict[tuple, tuple] = {}            # (symbol, last bar, bars, last close) -> (pattern, its record)
         self._cg_bars: dict[str, pd.DataFrame] = {}       # price history of the stocks members traded
         self._cg_missing: set[str] = set()                # tickers already looked up in the local cache
         self._senate_send = None                          # tests replace the Senate site with a function
@@ -652,6 +654,16 @@ class Engine:
         rep.docs, rep.scans = sum(1 for d in docs if d["status"] == "ok"), sum(1 for d in docs if d["status"] == "scan")
         rep.senate = bool(self.cfg.get("congress.senate.enabled") and self.cfg.get("congress.senate.agree_terms"))
         rep.backlog = int(self.store.get_meta("congress:backlog", 0) or 0)
+        log_ = list(self.store.get_meta("congress:changes", []) or [])
+        if not rep.backlog and rep.members:          # ratings only mean something once the history has been read
+            prev = self.store.get_meta("congress:tiers", None)
+            if isinstance(prev, dict):
+                new = congress.tier_changes(prev, rep.members)
+                if new:
+                    log_ = (new + log_)[:80]
+                    self.store.set_meta("congress:changes", log_)
+            self.store.set_meta("congress:tiers", {m.key: m.tier for m in rep.members})
+        rep.changes = log_
         self._cg = rep
         if errors:
             self._status["congress"] = ("off", L(f"议员交易：{errors[0]}（显示已缓存的内容）", f"Congress trades: {errors[0]} (showing cached content)"))
@@ -674,7 +686,7 @@ class Engine:
         out = []
         for note in rep.filings:
             m = rep.score(f"{note.chamber}:{note.member}")
-            sev = congress.severity(note, m)
+            sev = congress.severity(note, m, rep.scope)
             if sev is None:
                 continue
             try:
@@ -830,7 +842,7 @@ class Engine:
         self._building = snap
         try:
             self._extra_alerts = (self._index_alerts(snap) + self._bottoming(snap) + self._plan_alerts(snap)
-                                  + self._flow_alerts() + self._congress_alerts(snap))
+                                  + self._range_alerts(snap) + self._flow_alerts() + self._congress_alerts(snap))
         finally:
             self._building = None
         snap.flow = self._flow if self.cfg.get("flow.enabled", True) else None
@@ -956,12 +968,16 @@ class Engine:
                 st = plans.status(sym, plan, price=v.price, weight_pct=v.weight * 100, qty=v.qty, trades=trades,
                                   ccy=v.currency, **self._follow_info(snap, sym, v, plan))
                 snap.plans.append(st)
+                sf = rec = None
+                tag = ""
+                if self.cfg.get("alerts.stop_fall.require_for_buy", True) and st.buy_levels:
+                    sf, rec, tag = self._buy_gate(sym, st)
                 for key, level, title, text in st.events:
                     try:
-                        text = self._plan_text(snap, sym, st, key, level, text)
+                        text = self._plan_text(snap, sym, st, key, level, text, sf if key == "buy" else None, rec)
                     except Exception:
                         log.exception("plan write-up failed for %s", sym)
-                    out.append(Alert(f"plan:{sym}:{key}:{level:.10g}", "plan_level", sym,
+                    out.append(Alert(f"plan:{sym}:{key}:{level:.10g}" + (tag if key == "buy" else ""), "plan_level", sym,
                                      "high" if key == "exit" else "warn", title,
                                      text + L("\n价位是你自己在计划里写的；程序只负责提醒，不会下单。",
                                               "\nThe levels are ones you wrote in your plan; the program only reminds you and never places orders."),
@@ -970,7 +986,105 @@ class Engine:
             log.exception("plans failed")
         return out
 
-    def _plan_text(self, snap: Snapshot, sym: str, st, key: str, level: float, text: str) -> str:
+    def _stopfall(self, sym: str, bars: pd.DataFrame | None, long: pd.DataFrame | None = None, record: bool = False):
+        """(stop-falling pattern on the latest bar, the record of the same signal in this series or None)."""
+        if bars is None or len(bars) < 60:
+            return stopfall.StopFall(), None
+        p = dict(self.cfg.get("alerts.stop_fall", {}) or {})
+        key = (sym, bars.index[-1], len(bars), float(bars["close"].iloc[-1]))
+        hit = self._sf_cache.get(key)
+        if hit is None or (record and hit[1] is None and hit[0].formed):
+            st = hit[0] if hit is not None else stopfall.state(bars, p)
+            rec = None
+            if record and st.formed:
+                try:
+                    rec = stopfall.record(keylevels.join(long, bars) if long is not None else bars, p)
+                except Exception:
+                    log.exception("stop-fall record failed for %s", sym)
+            if len(self._sf_cache) > 300:
+                self._sf_cache.clear()
+            hit = self._sf_cache[key] = (st, rec)
+        return hit
+
+    def _buy_gate(self, sym: str, st) -> tuple:
+        """A buy level is only announced once the fall has stopped: replaces the plan's "level reached" events for
+        purchases by "level reached and stop-falling pattern formed", or by a note that it is still waited for."""
+        who = st.follow or sym
+        sf, rec = self._stopfall(who, self._daily.get(who), record=True)
+        px = st.check_price
+        events = [e for e in st.events if e[0] != "buy"]
+        if px != px or not sf.ok:
+            st.events = events
+            if px == px and st.buy_reached:
+                st.flags.append(("info", L("已到买入价位，但数据不足以判断止跌形态，暂不提醒。",
+                                           "A buy level is reached, but there is not enough data to judge the stop-falling pattern; no alert yet.")))
+            return sf, rec, ""
+        unit = f" {st.level_ccy}" if st.follow and st.level_ccy else ""
+        hit = [x for x in st.buy_levels if px <= x or (sf.low <= x and px <= x + 2 * sf.atr)]      # touched by this leg
+        if hit and sf.formed:
+            for x in hit:
+                events.append(("buy", x,
+                               L(f"买入价位出现止跌形态：{sym}" + (f"（按 {st.follow}）" if st.follow else ""),
+                                 f"Stop-falling pattern at your buy level: {sym}" + (f" (by {st.follow})" if st.follow else "")),
+                               L(f"{who} 现价 {plans.fmt_px(px)}{unit}，这一轮下跌的低点 {plans.fmt_px(sf.low)}（{sf.low_date:%m-%d}）到过你在计划里写下的买入价位 "
+                                 f"{plans.fmt(x)}，并且止跌形态已成立。这只是提醒你的计划到了这一步，是否买、买多少由你决定。",
+                                 f"{who} is at {plans.fmt_px(px)}{unit}; the low of this decline, {plans.fmt_px(sf.low)} ({sf.low_date:%m-%d}), reached the buy level "
+                                 f"{plans.fmt(x)} written in your plan, and the stop-falling pattern is formed. This only reminds you that your plan has reached "
+                                 "this step; whether to buy and how much is up to you.")))
+        elif hit:
+            lack = L("；", "; ").join(sf.missing)
+            st.flags.append(("info", L(f"已到买入价位 {' / '.join(plans.fmt(x) for x in hit)}，但止跌形态还没有成立，暂不提醒。还缺：{lack}",
+                                       f"Buy level {' / '.join(plans.fmt(x) for x in hit)} is reached, but the stop-falling pattern is not formed, so no alert yet. "
+                                       f"Still missing: {lack}")))
+        st.events = events
+        return sf, rec, f":{sf.low_date:%Y%m%d}" if sf.low_date is not None else ""
+
+    def _range_alerts(self, snap: Snapshot) -> list[Alert]:
+        """The top of a trading range reached (sell-zone reminder); the bottom only with a stop-falling pattern."""
+        c = dict(self.cfg.get("alerts.range", {}) or {})
+        if not c.get("enabled", True):
+            return []
+        rp = {k: v for k, v in (self.cfg.get("quant.range", {}) or {}).items() if k != "enabled"}
+        main = next(iter(snap.indices), None)
+        plan_of = {p.symbol: p for p in snap.plans}
+        out: list[Alert] = []
+        for v in snap.tickers:
+            a = v.analysis
+            rg = a.range if a is not None and a.ok else None
+            if rg is None or rg.status not in ("sell", "buy") or v.bars is None or math.isnan(v.price):
+                continue
+            edge = rg.status
+            sf = rec_sf = None
+            if edge == "buy":
+                sf, rec_sf = self._stopfall(v.symbol, v.bars, record=True)
+                if not (sf.ok and sf.formed):
+                    continue                        # at the bottom of the range but still falling: nothing yet
+                anchor = f"{sf.low_date:%Y%m%d}"
+            else:
+                if not c.get("sell", True):
+                    continue
+                last = self.store.get_meta(f"range:{v.symbol}:sell", None)      # one reminder per visit to the zone
+                if isinstance(last, dict) and time.time() - float(last.get("at", 0)) < float(c.get("repeat_days", 7)) * 86400:
+                    anchor = str(last.get("id"))
+                else:
+                    anchor = f"{v.bars.index[-1]:%Y%m%d}"
+                    self.store.set_meta(f"range:{v.symbol}:sell", {"id": anchor, "at": time.time()})
+            try:
+                key = ("edge", v.symbol, v.bars.index[-1], len(v.bars), edge)
+                if key not in self._sf_cache:
+                    self._sf_cache[key] = (rt.edge_record(v.bars, rp, edge), None)
+                title, body = insight.range_alert(
+                    v.symbol, rg, edge, bars=v.bars, price=v.price, day_pct=v.day_pct, analysis=a, rec=self._sf_cache[key][0],
+                    sf=sf, sf_rec=rec_sf, plan=plan_of.get(v.symbol), indices=snap.indices, vix=snap.vix,
+                    index_bars=self._idx_bars.get(main), usd=v.currency == "USD")
+            except Exception:
+                log.exception("range write-up failed for %s", v.symbol)
+                continue
+            out.append(Alert(f"range:{v.symbol}:{edge}:{anchor}", "range", v.symbol, "warn", title, body,
+                             {"edge": edge, "support": rg.support, "resistance": rg.resistance}))
+        return out
+
+    def _plan_text(self, snap: Snapshot, sym: str, st, key: str, level: float, text: str, stop=None, stop_rec=None) -> str:
         """The analysis under a plan-level alert, for the stock whose price the levels are written in."""
         who = st.follow or sym
         w = snap.get(who)
@@ -986,7 +1100,7 @@ class Engine:
         return insight.plan_body(text, st, key, level, symbol=who, bars=bars, price=st.check_price, day_pct=day,
                                  analysis=w.analysis if w is not None else None, indices=snap.indices, vix=snap.vix,
                                  index_bars=self._idx_bars.get(main), bottom=snap.bottoms.get(who), flows=flows,
-                                 usd=ccy == "USD")
+                                 usd=ccy == "USD", stop=stop, stop_rec=stop_rec)
 
     # ------------------------------------------------------------------ market indices and their key levels
     def _index_cfg(self) -> dict:
@@ -1094,8 +1208,17 @@ class Engine:
                         now.recent.append((past.asof, x))
             if len(self._idx_past) > 200:
                 self._idx_past.clear()
+            if c.get("stop_fall", True) and (now.inforce is not None or now.ind.get("dd", 0) <= -float(c.get("stop_fall_min_drawdown", 5))):
+                try:                                # it had broken down or fallen: say so when the fall has stopped
+                    sf, rec = self._stopfall(sym, bars, self._long.get(sym), record=True)
+                    if sf.ok and sf.formed and sf.formed_on is not None and (now.asof - sf.formed_on).days <= 7:
+                        title, body = insight.index_stop_alert(now, sf, rec, others=snap.indices, vix=snap.vix)
+                        out.append(Alert(f"idx:{sym}:stop:{sf.low_date:%Y%m%d}", "index_level", sym, "warn", title, body,
+                                         {"direction": "stop", "low": sf.low, "price": now.price}))
+                except Exception:
+                    log.exception("index stop-fall failed for %s", sym)
             for direction, hits in (("down", now.broken), ("up", now.reclaimed)):
-                if not hits or (direction == "up" and not c.get("up", True)):
+                if not hits or (direction == "up" and not c.get("up", True)) or not c.get("break_alerts", True):
                     continue
                 top = hits[0]
                 try:

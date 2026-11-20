@@ -135,13 +135,46 @@ def test_members_are_rated_with_a_minimum_sample_and_weighted():
     trades += [trade("Mixed", "UPP" if k % 2 else "DWN", "buy", d(20 + 5 * k)) for k in range(10)]
     trades += [trade("Decent", "UPP", "buy", d(20 + 5 * k)) for k in range(6)]
     calls, _ = cg.build_calls(trades, bars, bars["SPY"], (21, 63))
-    ms = {m.member: m for m in cg.score_members(calls)}
+    today = idx[-1].date()
+    ms = {m.member: m for m in cg.score_members(calls, today=today)}
     assert ms["Sharp"].tier == "star" and ms["Sharp"].weight == 3 and ms["Sharp"].n == 14 and ms["Sharp"].hit_rate == 1.0
     assert ms["Sharp"].buys[0] == 8 and ms["Sharp"].sells[0] == 6 and ms["Sharp"].ci[0] > 0.5 and ms["Sharp"].follow[0] == 14
-    assert ms["Wrong"].tier == "poor" and ms["Wrong"].weight == 0.5 and ms["Wrong"].mean < 0
+    assert ms["Wrong"].tier == "poor" and ms["Wrong"].weight == 0 and ms["Wrong"].mean < 0       # not accurate: carries no weight
     assert ms["Few"].tier == "thin" and ms["Mixed"].tier == "plain" and ms["Decent"].tier == "good" and ms["Decent"].weight == 2
-    assert [m.member for m in cg.score_members(calls)][0] == "Sharp"
+    assert ms["Few"].weight == 0 and ms["Mixed"].weight == 0
+    assert [m.member for m in cg.score_members(calls, today=today)][0] == "Sharp"
     assert ms["Sharp"].best.ticker in ("UPP", "DWN") and ms["Sharp"].worst is not None
+
+
+def test_ratings_roll_and_follow_the_recent_form():
+    idx, bars = _market()
+    n = len(idx)
+    d = lambda k: idx[k].date().isoformat()
+    today = idx[-1].date()
+    good_old = [trade("Faded", "UPP", "buy", d(20 + 3 * k)) for k in range(30)]                  # right for a long time ...
+    bad_new = [trade("Faded", "DWN", "buy", d(n - 110 + 8 * k)) for k in range(8)]              # ... wrong lately
+    riser = [trade("Riser", "DWN", "buy", d(20 + 10 * k)) for k in range(10)] + \
+            [trade("Riser", "UPP", "buy", d(n - 115 + 7 * k)) for k in range(12)]                # a poor start, right lately
+    steady = [trade("Steady", "UPP", "buy", d(20 + 20 * k)) for k in range(16)]
+    calls, _ = cg.build_calls(good_old + bad_new + riser + steady, bars, bars["SPY"], (21, 63))
+    ms = {m.member: m for m in cg.score_members(calls, today=today)}
+    f = ms["Faded"]
+    assert f.base == "star" and f.trend == "down" and f.tier == "good" and f.weight == 2 and f.recent[0] >= 5 and f.recent[1] < 0.5
+    r = ms["Riser"]
+    assert r.base in ("plain", "thin") and r.trend == "up" and r.tier == "good" and r.recent[0] >= 10
+    assert ms["Steady"].tier == "star" and ms["Steady"].trend in ("", "up")
+    # the window rolls: seen from far enough in the future the old calls no longer count
+    from datetime import timedelta
+    later = {m.member: m for m in cg.score_members(calls, {"window_days": 200}, today=today)}
+    assert later["Faded"].trades < f.trades and later["Faded"].tier != "star"
+    assert cg.score_members(calls, today=today + timedelta(days=5000)) == []
+    # a change of tier is recorded once, with what it means
+    ch = cg.tier_changes({"house:Faded": "star", "house:Steady": "star", "house:Riser": "plain", "house:Gone": "good"},
+                         list(ms.values()), today)
+    assert {(c["member"], c["old"], c["new"]) for c in ch} == {("Faded", "star", "good"), ("Riser", "plain", "good")}
+    text = cg.change_text(next(c for c in ch if c["member"] == "Riser"))
+    assert "一般 → 偏准" in text and "开始纳入参考" in text
+    assert "不再作参考" in cg.change_text({"member": "X", "old": "good", "new": "plain", "at": "2026-11-20"})
 
 
 def test_report_alert_and_page(env):
@@ -180,21 +213,37 @@ def test_report_alert_and_page(env):
         assert not eng.congress_due()
         snap = eng.build_snapshot()
         al = {a.id: a for a in snap.alerts if a.kind == "congress"}
-        assert set(al) == {"cg:house:new1", "cg:house:new2"}              # an accurate member; a stock on the watchlist
+        assert set(al) == {"cg:house:new1"}                               # only the accurate member is referred to
+        eng.cfg.set("congress.alert_scope", "accurate_or_watchlist")      # ... unless trades in watched stocks are wanted too
+        eng.scan_congress()
+        snap = eng.build_snapshot()
+        al = {a.id: a for a in snap.alerts if a.kind == "congress"}
+        assert set(al) == {"cg:house:new1", "cg:house:new2"}
         star, watch = al["cg:house:new1"], al["cg:house:new2"]
         assert star.severity == "warn" and "★ 准" in star.title and "卖出 DWN" in star.title
+        assert "近 730 天披露" in star.body
         for section in ("【披露了什么】", "【这位议员的记录】", "【怎么看】"):
             assert section in star.body
         assert "方向正确 12 笔，占 100%" in star.body and "45 天" in star.body and "不是买卖建议" in star.body
         assert "披露之后的下一个交易日才跟" in star.body and "交易日收盘" in star.body
         assert watch.symbol == "AAA" and "在你的自选里" in watch.body and "【AAA 现在的位置】" in watch.body and "样本少" in watch.body
         eng.build_snapshot()
-        assert len(sent) == 1 and "议员交易" in sent[0][1] and "市值" not in sent[0][1] and "盈亏" not in sent[0][1]
+        assert len(sent) == 2 and "议员交易" in sent[0][1] and "市值" not in sent[0][1] and "盈亏" not in sent[0][1]
         html = render.congress_html(snap.congress, T.Palette(), {"AAA", "BBB"})
         assert "谁买卖得准" in html and "Sharp Trader" in html and "最近披露" in html and "<b>AAA</b>" in html and "1 份是扫描的纸质申报" in html
         assert "【议员交易】" in "\\n".join(headless.digest(snap)) and "Sharp Trader" in "\\n".join(headless.digest(snap))
         k = rep.consensus("DWN", 90, idx[-1].date())
-        assert k["buyers"] == {"Nobody Known": 1.0} and k["sellers"] == {"Sharp Trader": 3.0} and k["net"] == -2.0
+        assert k["buyers"] == {"Nobody Known": 0.0} and k["sellers"] == {"Sharp Trader": 3.0} and k["net"] == -3.0
+        assert k["acc_buy"] == [] and k["acc_sell"] == ["Sharp Trader"]                       # the unrated buyer carries no weight
+        assert "没有评级偏准以上的议员，所以不作参考" in star.body and "只参考评级偏准以上的议员" in html and "近期表现" in html
+        # a change of tier between two scans is remembered and shown
+        assert store.get_meta("congress:tiers")["house:Sharp Trader"] == "star" and snap.congress.changes == []
+        store.set_meta("congress:tiers", {**store.get_meta("congress:tiers"), "house:Sharp Trader": "plain"})
+        rep2 = eng.scan_congress()
+        assert [(c["member"], c["old"], c["new"]) for c in rep2.changes] == [("Sharp Trader", "plain", "star")]
+        assert eng.scan_congress().changes == rep2.changes                                    # recorded once
+        snap2 = eng.build_snapshot()
+        assert "评级变动" in render.congress_html(snap2.congress, T.Palette(), {"AAA"}) and "评级变动" in "\n".join(headless.digest(snap2))
         store.set_meta("congress:backlog", 7)             # history still being read: no alerts yet
         eng.scan_congress()
         assert not [a for a in eng.build_snapshot().alerts if a.kind == "congress"]

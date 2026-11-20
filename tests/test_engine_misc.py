@@ -434,7 +434,7 @@ def test_notify_send_uses_only_the_configured_account(monkeypatch):
                             ("send", "me@example.com", "bot@example.com", "标题")]
     with pytest.raises(notify.NotifyError):
         notify.send(notify.settings({"enabled": True}), "x", "y", smtp_factory=FakeSMTP, secret="z")
-    assert notify.settings({})["enabled"] is False and notify.settings({})["kinds"] == ["bottoming", "plan_level", "flow", "index_level", "congress"]
+    assert notify.settings({})["enabled"] is False and notify.settings({})["kinds"] == ["bottoming", "plan_level", "flow", "index_level", "congress", "range"]
 
 
 def test_build_plan_levels_raise_alerts(env, monkeypatch, tmp_path):
@@ -450,6 +450,10 @@ def test_build_plan_levels_raise_alerts(env, monkeypatch, tmp_path):
     assert not any("不加仓" in t for _, t in st.flags)              # a build-up plan does not imply "no adding"
 
     monkeypatch.setattr(plans, "load", lambda path=None: {"CCC": plan})
+    snap = eng.refresh(force=True)
+    al = [a for a in snap.alerts if a.kind == "plan_level"]
+    assert {a.data["key"] for a in al} == {"target"}               # a buy level waits for the stop-falling pattern (tests/test_stopfall.py)
+    eng.cfg.set("alerts.stop_fall.require_for_buy", False)         # ... unless the level alone is wanted
     snap = eng.refresh(force=True)
     al = [a for a in snap.alerts if a.kind == "plan_level"]
     assert {a.data["key"] for a in al} == {"buy", "target"} and all(a.severity == "warn" for a in al)

@@ -145,6 +145,25 @@ def main() -> int:
     checks, used = eng.pretrade("AAA", "SELL", 5, None)
     texts["pretrade_sell"] = render.pretrade_html(checks, "AAA", "SELL", 5, used)
 
+    from stockdesk import insight                                 # the stop-falling pattern and the range edges, in every state
+    from stockdesk.quant import range_trading as rt2, stopfall
+    from test_range_trading import oscillating
+    from test_stopfall import FALL, FLAT, bars as sbars
+    done = sbars(FLAT + FALL + [86.0, 87.5, 89.0, 89.5, 87.6, 86.9, 90.2])
+    texts["stopfall"] = "\n".join(insight.stopfall_lines(stopfall.state(done), stopfall.record(sbars((FLAT + FALL + [86.0, 87.5, 89.0, 89.5, 87.6, 86.9, 90.2, 95, 99]) * 6)))
+                                  + insight.stopfall_lines(stopfall.state(sbars(FLAT + FALL))) + insight.stopfall_lines(stopfall.StopFall()))
+    from conftest import make_bars
+    wave = make_bars(oscillating(300), spread=0.003)
+    for edge in ("sell", "buy"):
+        rg = rt2.range_state(wave)
+        title, body = insight.range_alert("AAA", rg, edge, bars=wave, price=float(wave["close"].iloc[-1]), day_pct=0.5,
+                                          analysis=snap.get("AAA").analysis, rec=rt2.edge_record(wave, None, edge), sf=stopfall.state(done),
+                                          plan=next((p for p in snap.plans if p.symbol == "AAA"), None), indices=snap.indices, vix=snap.vix)
+        texts[f"range_{edge}"] = title + "\n" + body
+    st0 = next(iter(snap.indices.values()))
+    texts["index_stop"] = "\n".join(insight.index_stop_alert(st0, stopfall.state(done), None, others=snap.indices, vix=snap.vix))
+    texts["plan_flags"] = "\n".join(t for p in snap.plans for _, t in p.flags)
+
     kinds = {a.kind for a in snap.alerts}
     need = {"bottoming", "plan_level", "flow", "index_level", "congress"}
     problems = [f"missing alert kinds: {sorted(need - kinds)}"] if need - kinds else []

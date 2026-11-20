@@ -8,10 +8,20 @@ as a purchase, bought put options as a sale; other option trades and exchanges a
 judged.) Several filings of the same member, stock, direction and day count once.
 
 A member's record is the share of right calls with its 95 % Wilson interval and the average signed
-excess return. Tiers: "star" needs at least ``min_calls`` judged calls, an interval entirely above
-50 % and a positive average; "good" needs ``watch_calls`` calls, 60 % right and a positive average;
-"poor" is the mirror of "star". Tiers carry a weight (3 / 2 / 1 / 0.5) that is used when the buyers
-and sellers of one stock are added up.
+excess return, over a ROLLING window: only calls traded in the last ``window_days`` count, so old
+calls drop out and the record moves with every scan. Tiers: "star" needs at least ``min_calls``
+judged calls, an interval entirely above 50 % and a positive average; "good" needs ``watch_calls``
+calls, 60 % right and a positive average; "poor" is the mirror of "star".
+
+Records change, so the recent form is checked as well: the calls of the last ``recent_days`` days,
+judged at the short horizon so that they count sooner. An accurate member whose recent form has
+turned (at least ``recent_min`` calls, under half right, negative average) is moved down one tier;
+a member whose recent calls alone would earn "star" is moved up to "good". Every change of tier is
+recorded with its date.
+
+Only members rated "good" or better are referred to: they alone raise alerts, and only their trades
+carry weight (3 for "star", 2 for "good", 0 for everyone else) when the buyers and sellers of one
+stock are added up. ``alert_scope: accurate_or_watchlist`` also alerts on any trade in a watched stock.
 
 What this cannot tell: reports come up to 45 days after the trade, give amount ranges only, and many
 are made by a spouse or an adviser. Among several hundred members some will look skilful by chance,
@@ -34,11 +44,13 @@ from .quant.backtest import wilson_interval
 DEFAULTS: dict = {"enabled": True, "scan_minutes": 60, "years_back": 2, "docs_per_scan": 40, "pause_seconds": 0.3,
                   "asset_types": ["ST", "OP"], "horizon_days": 63, "short_days": 21, "min_calls": 10, "watch_calls": 5,
                   "alert_days": 7, "consensus_days": 90, "price_batch": 60, "price_batches": 4, "price_period": "3y",
-                  "price_ttl_hours": 20, "email_min_severity": "warn", "max_emails_per_day": 6, "max_recent": 120}
+                  "price_ttl_hours": 20, "email_min_severity": "warn", "max_emails_per_day": 6, "max_recent": 120,
+                  "window_days": 730, "recent_days": 180, "recent_min": 5, "alert_scope": "accurate"}
 
 TIER = {"star": L("★ 准", "★ accurate"), "good": L("偏准", "fairly accurate"), "plain": L("一般", "ordinary"),
         "thin": L("样本少", "few calls"), "poor": L("偏差", "mostly wrong")}
-WEIGHT = {"star": 3.0, "good": 2.0, "plain": 1.0, "thin": 1.0, "poor": 0.5}
+WEIGHT = {"star": 3.0, "good": 2.0, "plain": 0.0, "thin": 0.0, "poor": 0.0}      # only accurate members are referred to
+TREND = {"down": L("近期转差", "recent form worse"), "up": L("近期转好", "recent form better"), "": ""}
 OWNER = {"self": L("本人", "self"), "spouse": L("配偶", "spouse"), "joint": L("共同", "joint"), "child": L("子女", "dependent child")}
 CHAMBER = {"house": L("众议院", "House"), "senate": L("参议院", "Senate")}
 
@@ -117,8 +129,11 @@ class MemberScore:
     sells: tuple = (0, None)
     short: tuple = (0, None, None)   # (n, share right, average) at the short horizon
     follow: tuple = (0, None, None)  # the same calls judged from the session after the disclosure
+    recent: tuple = (0, None, None)  # (n, share right, average): calls of the last ``recent_days``, short horizon
+    trend: str = ""                  # "down" | "up" | "": what the recent form says against the whole window
+    base: str = "thin"               # the tier by the whole window, before the recent form is applied
     tier: str = "thin"
-    weight: float = 1.0
+    weight: float = 0.0
     best: Call | None = None
     worst: Call | None = None
     last_filed: str = ""
@@ -155,20 +170,26 @@ class CongressReport:
     calls: list[Call] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     senate: bool = False             # the Senate's reports are read too (the user accepted that site's terms)
+    scope: str = "accurate"          # who raises alerts: "accurate" | "accurate_or_watchlist"
+    window_days: int = 730
+    recent_days: int = 180
+    changes: list = field(default_factory=list)   # [{member, chamber, old, new, at}], newest first
 
     def score(self, key: str) -> MemberScore | None:
         return next((m for m in self.members if m.key == key), None)
 
     def consensus(self, ticker: str, days: int = 90, today: date | None = None) -> dict:
-        """Who bought and who sold ``ticker`` in the last ``days`` days, plain and weighted by record."""
+        """Who bought and who sold ``ticker`` in the last ``days`` days. Everyone is listed; only members rated
+        accurate carry weight, so ``net`` is the accurate buyers' weights minus the accurate sellers'."""
         cut = ((today or date.today()) - timedelta(days=days)).isoformat()
         buy: dict[str, float] = {}
         sell: dict[str, float] = {}
         for c in self.calls:
             if c.ticker == ticker and c.traded >= cut:
                 m = self.score(c.who)
-                (buy if c.side == "buy" else sell)[c.member] = m.weight if m else 1.0
-        return {"buyers": buy, "sellers": sell, "net": sum(buy.values()) - sum(sell.values())}
+                (buy if c.side == "buy" else sell)[c.member] = m.weight if m else 0.0
+        return {"buyers": buy, "sellers": sell, "net": sum(buy.values()) - sum(sell.values()),
+                "acc_buy": [n for n, w in buy.items() if w > 0], "acc_sell": [n for n, w in sell.items() if w > 0]}
 
 
 def build_calls(trades: list[dict], bars: dict[str, pd.DataFrame], bench: pd.DataFrame | None,
@@ -227,12 +248,16 @@ def build_calls(trades: list[dict], bars: dict[str, pd.DataFrame], bench: pd.Dat
     return out, other
 
 
-def score_members(calls: list[Call], cfg: dict | None = None) -> list[MemberScore]:
+def score_members(calls: list[Call], cfg: dict | None = None, today: date | None = None) -> list[MemberScore]:
     p = settings(cfg)
     h, hs = int(p["horizon_days"]), int(p["short_days"])
+    day = today or date.today()
+    cut = (day - timedelta(days=int(p["window_days"]))).isoformat()         # the rolling window of the record
+    fresh = (day - timedelta(days=int(p["recent_days"]))).isoformat()       # the recent form
     by: dict[str, list[Call]] = {}
     for c in calls:
-        by.setdefault(c.who, []).append(c)
+        if c.traded >= cut:
+            by.setdefault(c.who, []).append(c)
     out = []
     for key, rows in by.items():
         m = MemberScore(key, rows[0].member, rows[0].state, rows[0].chamber, trades=len(rows),
@@ -253,15 +278,29 @@ def score_members(calls: list[Call], cfg: dict | None = None) -> list[MemberScor
         if fo:
             m.follow = (len(fo), float(np.mean([x > 0 for x in fo])), float(np.mean(fo)))
         if m.n < int(p["watch_calls"]):
-            m.tier = "thin"
+            m.base = "thin"
         elif m.n >= int(p["min_calls"]) and m.ci and m.ci[0] > 0.5 and m.mean > 0:
-            m.tier = "star"
+            m.base = "star"
         elif m.hit_rate >= 0.6 and m.mean > 0:
-            m.tier = "good"
+            m.base = "good"
         elif m.n >= int(p["min_calls"]) and m.ci and m.ci[1] < 0.5 and m.mean < 0:
-            m.tier = "poor"
+            m.base = "poor"
         else:
-            m.tier = "plain"
+            m.base = "plain"
+        m.tier = m.base
+        rec = [c.ex[hs] for c in rows if c.traded >= fresh and hs in c.ex]
+        if rec:
+            hits = sum(1 for x in rec if x > 0)
+            m.recent = (len(rec), hits / len(rec), float(np.mean(rec)))
+            if len(rec) >= int(p["recent_min"]):
+                ci = wilson_interval(hits, len(rec))
+                if m.recent[1] < 0.5 and m.recent[2] < 0:
+                    m.trend = "down"
+                    m.tier = {"star": "good", "good": "plain"}.get(m.base, m.base)
+                elif m.recent[1] >= 0.65 and m.recent[2] > 0:
+                    m.trend = "up"
+                    if m.base in ("plain", "thin") and len(rec) >= int(p["min_calls"]) and ci and ci[0] > 0.5:
+                        m.tier = "good"
         m.weight = WEIGHT[m.tier]
         out.append(m)
     rank = {"star": 0, "good": 1, "plain": 2, "poor": 3, "thin": 4}
@@ -274,7 +313,8 @@ def build_report(trades: list[dict], bars: dict[str, pd.DataFrame], bench: pd.Da
     p = settings(cfg)
     h, hs = int(p["horizon_days"]), int(p["short_days"])
     calls, _ = build_calls(trades, bars, bench, (hs, h), tuple(p["asset_types"]))
-    rep = CongressReport(ts=now, horizon=h, short=hs, calls=calls, members=score_members(calls, p))
+    rep = CongressReport(ts=now, horizon=h, short=hs, calls=calls, members=score_members(calls, p, today),
+                         scope=str(p["alert_scope"]), window_days=int(p["window_days"]), recent_days=int(p["recent_days"]))
     rep.tickers = len({c.ticker for c in calls})
     rep.priced = len({c.ticker for c in calls if c.px is not None})
     rep.recent = sorted(calls, key=lambda c: (c.filed, c.traded), reverse=True)[: int(p["max_recent"])]
@@ -336,10 +376,20 @@ def record_lines(m: MemberScore | None, rep: CongressReport, ticker_calls: list[
                      f"· Rating: {TIER[m.tier]}. {m.trades} stock trade(s) disclosed, but none is {h} sessions old yet, so nothing can be judged."))
     else:
         ci = f"{m.ci[0] * 100:.0f}%–{m.ci[1] * 100:.0f}%" if m.ci else "—"
-        out.append(L(f"· 评级：{TIER[m.tier]}（加权系数 {m.weight:g}）。已披露 {m.trades} 笔股票交易，其中 {m.n} 笔满 {h} 个交易日可以评估："
+        out.append(L(f"· 评级：{TIER[m.tier]}（加权系数 {m.weight:g}）。近 {rep.window_days} 天披露 {m.trades} 笔股票交易，其中 {m.n} 笔满 {h} 个交易日可以评估："
                      f"方向正确 {m.hits} 笔，占 {m.hit_rate * 100:.0f}%（95% 区间 {ci}），平均超额 {pct(m.mean)}",
-                     f"· Rating: {TIER[m.tier]} (weight {m.weight:g}). {m.trades} stock trade(s) disclosed, {m.n} of them {h} sessions old and "
-                     f"judgeable: {m.hits} right, {m.hit_rate * 100:.0f}% (95% interval {ci}), average excess {pct(m.mean)}"))
+                     f"· Rating: {TIER[m.tier]} (weight {m.weight:g}). {m.trades} stock trade(s) disclosed in the last {rep.window_days} days, {m.n} of them "
+                     f"{h} sessions old and judgeable: {m.hits} right, {m.hit_rate * 100:.0f}% (95% interval {ci}), average excess {pct(m.mean)}"))
+        if m.recent[0]:
+            moved = ""
+            if m.tier != m.base:
+                moved = L(f" → {TREND[m.trend]}，评级由“{TIER[m.base]}”调为“{TIER[m.tier]}”", f" → {TREND[m.trend]}; rating moved from '{TIER[m.base]}' to '{TIER[m.tier]}'")
+            elif m.trend:
+                moved = L(f" → {TREND[m.trend]}", f" → {TREND[m.trend]}")
+            out.append(L(f"· 近期表现（近 {rep.recent_days} 天的交易，按 {rep.short} 个交易日评估）：{m.recent[0]} 笔，方向正确 {m.recent[1] * 100:.0f}%，"
+                         f"平均超额 {pct(m.recent[2])}{moved}",
+                         f"· Recent form (trades of the last {rep.recent_days} days, judged at {rep.short} sessions): {m.recent[0]} call(s), "
+                         f"{m.recent[1] * 100:.0f}% right, average excess {pct(m.recent[2])}{moved}"))
         parts = []
         if m.buys[0]:
             parts.append(L(f"买入 {m.buys[0]} 笔，平均超额 {pct(m.buys[1])}", f"{m.buys[0]} purchase(s), average excess {pct(m.buys[1])}"))
@@ -367,14 +417,13 @@ def record_lines(m: MemberScore | None, rep: CongressReport, ticker_calls: list[
     return out
 
 
-def severity(note: FilingNote, m: MemberScore | None) -> str | None:
-    """Whether a report deserves an alert: an accurate member, or a stock on the watchlist."""
+def severity(note: FilingNote, m: MemberScore | None, scope: str = "accurate") -> str | None:
+    """Whether a report deserves an alert. By default only reports of members rated accurate do; with
+    ``accurate_or_watchlist`` any trade in a watched stock does too."""
     strong = m is not None and m.weight >= 2
-    if strong and note.watch:
-        return "high"
-    if strong or note.watch:
-        return "warn"
-    return None
+    if strong:
+        return "high" if note.watch else "warn"
+    return "warn" if note.watch and scope == "accurate_or_watchlist" else None
 
 
 def alert_text(note: FilingNote, rep: CongressReport, extra: list[str] | None = None, days: int = 90) -> tuple[str, str]:
@@ -407,12 +456,17 @@ def alert_text(note: FilingNote, rep: CongressReport, extra: list[str] | None = 
         others_b = [n for n in k["buyers"] if n != note.member]
         others_s = [n for n in k["sellers"] if n != note.member]
         if others_b or others_s:
-            cons.append(L(f"· {t}：近 {days} 天另有 {len(others_b)} 人买入"
-                          + (f"（{'、'.join(others_b[:3])}）" if others_b else "") + f"、{len(others_s)} 人卖出"
-                          + (f"（{'、'.join(others_s[:3])}）" if others_s else "") + f"；按评级加权的净值 {k['net']:+.1f}（正 = 买方占优）",
-                          f"· {t}: in the last {days} days {len(others_b)} other member(s) bought"
-                          + (f" ({', '.join(others_b[:3])})" if others_b else "") + f" and {len(others_s)} sold"
-                          + (f" ({', '.join(others_s[:3])})" if others_s else "") + f"; net weighted by record {k['net']:+.1f} (positive = more buying)"))
+            ab = [n for n in k["acc_buy"] if n != note.member]
+            asell = [n for n in k["acc_sell"] if n != note.member]
+            net = sum(k["buyers"][n] for n in ab) - sum(k["sellers"][n] for n in asell)
+            acc = (L(f"其中评级偏准以上的：买入 {len(ab)} 人" + (f"（{'、'.join(ab[:3])}）" if ab else "") + f"，卖出 {len(asell)} 人"
+                     + (f"（{'、'.join(asell[:3])}）" if asell else "") + f"，加权净值 {net:+.1f}（正 = 准的人里买方占优）",
+                     f"of those rated fairly accurate or better: {len(ab)} bought" + (f" ({', '.join(ab[:3])})" if ab else "") + f", {len(asell)} sold"
+                     + (f" ({', '.join(asell[:3])})" if asell else "") + f", weighted net {net:+.1f} (positive = more buying among the accurate)")
+                   if ab or asell else
+                   L("其中没有评级偏准以上的议员，所以不作参考", "none of them is rated fairly accurate or better, so they are not referred to"))
+            cons.append(L(f"· {t}：近 {days} 天另有 {len(others_b)} 人买入、{len(others_s)} 人卖出；{acc}",
+                          f"· {t}: in the last {days} days {len(others_b)} other member(s) bought and {len(others_s)} sold; {acc}"))
     if cons:
         lines.append(head("其他议员在同样的股票上", "Other members in the same stocks"))
         lines += cons
@@ -446,13 +500,31 @@ def digest_lines(rep: CongressReport | None, days: int = 2, today: date | None =
     out = []
     for n in rep.filings:
         m = rep.score(f"{n.chamber}:{n.member}")
-        if n.filed < cut or severity(n, m) is None:
+        if n.filed < cut or severity(n, m, rep.scope) is None:
             continue
         tag = f"{TIER[m.tier]} " if m is not None and m.weight >= 2 else ""
         rows = L("；", "; ").join(L(f"{side_text(c)} {c.ticker}（{c.traded[5:]}，{money(c.lo, c.hi)}）",
                                     f"{side_text(c)} {c.ticker} ({c.traded[5:]}, {money(c.lo, c.hi)})") for c in n.calls[:6])
         out.append(L(f"  {n.filed} {tag}{n.member}：{rows}", f"  {n.filed} {tag}{n.member}: {rows}"))
+    moved = [c for c in rep.changes if c["at"] >= cut and (WEIGHT.get(c["old"], 0) > 0) != (WEIGHT.get(c["new"], 0) > 0)]
+    if moved:
+        out.append(L("  评级变动：", "  Rating changes: ") + L("；", "; ").join(change_text(c) for c in moved[:6]))
     return out
+
+
+def tier_changes(prev: dict, members: list[MemberScore], today: date | None = None) -> list[dict]:
+    """Members whose tier differs from the one remembered in ``prev`` (key -> tier)."""
+    day = (today or date.today()).isoformat()
+    return [{"member": m.member, "chamber": m.chamber, "key": m.key, "old": prev[m.key], "new": m.tier, "at": day}
+            for m in members if m.key in prev and prev[m.key] != m.tier]
+
+
+def change_text(ch: dict) -> str:
+    into = WEIGHT.get(ch["new"], 0) > 0 and WEIGHT.get(ch["old"], 0) == 0
+    out = WEIGHT.get(ch["new"], 0) == 0 and WEIGHT.get(ch["old"], 0) > 0
+    note = (L("，开始纳入参考", "; now referred to") if into else L("，不再作参考", "; no longer referred to") if out else "")
+    return L(f"{ch['at']} {ch['member']}：{TIER.get(ch['old'], ch['old'])} → {TIER.get(ch['new'], ch['new'])}{note}",
+             f"{ch['at']} {ch['member']}: {TIER.get(ch['old'], ch['old'])} → {TIER.get(ch['new'], ch['new'])}{note}")
 
 
 def as_of(ts: float) -> str:

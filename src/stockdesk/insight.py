@@ -520,7 +520,8 @@ def position_lines(symbol: str, bars: pd.DataFrame | None, price: float | None =
 
 def plan_body(text: str, st, key: str, level: float, *, symbol: str, bars: pd.DataFrame | None, price: float,
               day_pct: float | None, analysis=None, indices: dict | None = None, vix: dict | None = None,
-              index_bars: pd.DataFrame | None = None, bottom=None, flows: list | None = None, usd: bool = True) -> str:
+              index_bars: pd.DataFrame | None = None, bottom=None, flows: list | None = None, usd: bool = True,
+              stop=None, stop_rec=None) -> str:
     """The write-up under a "your plan level was reached" alert. ``st`` is the PlanStatus, ``symbol`` the stock
     whose price the levels are written in."""
     px = st.check_price
@@ -546,6 +547,9 @@ def plan_body(text: str, st, key: str, level: float, *, symbol: str, bars: pd.Da
         others.append(L(f"计划还剩 {st.days_left} 天", f"{st.days_left} days left in the plan"))
     if others:
         out.append(L("· 计划里的其它价位：", "· The other levels in the plan: ") + L("；", "; ").join(others))
+    if key == "buy" and stop is not None:
+        out.append(head("止跌形态", "The stop-falling pattern"))
+        out += stopfall_lines(stop, stop_rec)
     main = next(iter((indices or {}).values()), None)
     pos = position_lines(symbol, bars, price, day_pct=day_pct, analysis=analysis, index=main, index_bars=index_bars, usd=usd)
     if pos:
@@ -642,6 +646,151 @@ def flow_extra(tickers: list[str], views, indices: dict | None = None, vix: dict
         out.append(head("同一时间的大盘", "The market at the same time"))
         out += mk
     return [tidy(x) for x in out]
+
+
+# ---- the stop-falling pattern and the edges of a trading range ----------------------------------------
+
+def stopfall_lines(sf, rec=None, live: bool = False) -> list[str]:
+    """The four conditions of the stop-falling pattern, each with its numbers, and the record of the signal."""
+    if sf is None or not sf.ok:
+        return [L("· 数据不足，无法判断止跌形态。", "· Not enough data to judge the stop-falling pattern.")]
+    met = sum(1 for _, ok, _ in sf.checks if ok)
+    out = [L(f"· 四项条件成立 {met}/4" + ("，形态成立" if sf.formed else "，形态还不成立") + (f"（{sf.formed_on:%m-%d} 起）" if sf.formed and sf.formed_on is not None else "")
+             + ("；今天还没收盘，以收盘为准" if live else ""),
+             f"· {met} of the 4 conditions hold" + ("; the pattern is formed" if sf.formed else "; the pattern is not formed yet")
+             + (f" (since {sf.formed_on:%m-%d})" if sf.formed and sf.formed_on is not None else "")
+             + ("; today has not closed yet, the close decides" if live else ""))]
+    out += [f"· {'✓' if ok else '✗'} {d}" for _, ok, d in sf.checks]
+    out.append(L(f"· 作废条件：收盘跌破这一轮的低点 {num(sf.low)}（{sf.low_date:%m-%d}，距现价 {gap(sf.low, sf.close)}）。跌破就重新计数。",
+                 f"· Void if a close falls under the low of this leg, {num(sf.low)} ({sf.low_date:%m-%d}, {gap(sf.low, sf.close)} from the price); the count then starts again."))
+    if rec is not None and rec.n:
+        hs = sorted(rec.fwd)
+        if hs:
+            out.append(L(f"· 历史上同样的形态（{rec.since:%Y} 年以来 {rec.n} 次）：之后 {' / '.join(str(h) for h in hs)} 个交易日的涨跌中位数 "
+                         f"{' / '.join(f'{rec.fwd[h][1] * 100:+.1f}%' for h in hs)}，上涨比例 {' / '.join(f'{rec.fwd[h][2] * 100:.0f}%' for h in hs)}；"
+                         f"对照（任意一天）中位数 {' / '.join(f'{rec.base[h][0] * 100:+.1f}%' for h in hs if h in rec.base)}",
+                         f"· The same pattern in the past ({rec.n} time(s) since {rec.since:%Y}): median change after {' / '.join(str(h) for h in hs)} sessions "
+                         f"{' / '.join(f'{rec.fwd[h][1] * 100:+.1f}%' for h in hs)}, share of rises {' / '.join(f'{rec.fwd[h][2] * 100:.0f}%' for h in hs)}; "
+                         f"for comparison (any day) median {' / '.join(f'{rec.base[h][0] * 100:+.1f}%' for h in hs if h in rec.base)}"))
+        if rec.failed is not None:
+            out.append(L(f"· 其中 {rec.failed * 100:.0f}% 在之后 21 个交易日内又收盘跌破了那一轮的低点（形态失败）。形态成立说明“跌势暂时停了”，不保证不再跌。",
+                         f"· In {rec.failed * 100:.0f}% of them a close fell under that leg's low within the next 21 sessions (the pattern failed). "
+                         "A formed pattern says the fall has paused, not that it cannot resume."))
+    return out
+
+
+def range_lines(rg, px: float, rec: dict | None = None, edge: str = "sell") -> list[str]:
+    """The trading range, where the price is in it, and what followed earlier visits to this edge."""
+    brk = float(rg.params.get("break_atr", 0.5))
+    out = [L(f"· 区间：支撑 {num(rg.support)} / 阻力 {num(rg.resistance)}，宽 {rg.width_pct:.1f}%；横盘条件已连续成立 {rg.days} 天；下沿测试 {rg.touches[0]} 次、上沿 {rg.touches[1]} 次",
+             f"· The range: support {num(rg.support)} / resistance {num(rg.resistance)}, {rg.width_pct:.1f}% wide; the sideways conditions have held for {rg.days} days; "
+             f"lower edge tested {rg.touches[0]} time(s), upper edge {rg.touches[1]}"),
+           L(f"· 现价 {num(px)} 在区间的 {rg.pos * 100:.0f}% 位置（0% = 支撑，100% = 阻力）；高抛区 {num(rg.sell_band[0])}–{num(rg.sell_band[1])}，低吸区 {num(rg.buy_band[0])}–{num(rg.buy_band[1])}",
+             f"· The price {num(px)} is at {rg.pos * 100:.0f}% of the range (0% = support, 100% = resistance); sell zone {num(rg.sell_band[0])}–{num(rg.sell_band[1])}, "
+             f"buy zone {num(rg.buy_band[0])}–{num(rg.buy_band[1])}")]
+    if edge == "sell":
+        out.append(L(f"· 区间作废位：收盘高于 {num(rg.breakout)}（阻力 + {brk:g}×ATR，距现价 {gap(rg.breakout, px)}）算向上突破，高抛低吸规则不再适用",
+                     f"· Where the range is void: a close above {num(rg.breakout)} (resistance + {brk:g}×ATR, {gap(rg.breakout, px)} from the price) is an upward breakout "
+                     "and the buy-low / sell-high rule no longer applies"))
+    else:
+        out.append(L(f"· 区间作废位：收盘低于 {num(rg.stop)}（支撑 − {brk:g}×ATR，距现价 {gap(rg.stop, px)}）算向下跌破，规则不再低吸",
+                     f"· Where the range is void: a close below {num(rg.stop)} (support − {brk:g}×ATR, {gap(rg.stop, px)} from the price) is a breakdown and the rule stops buying low"))
+    if rec:
+        turn = L("回落到区间中部", "fell back to mid-range") if edge == "sell" else L("反弹到区间中部", "bounced to mid-range")
+        broke = L("向上突破", "broke out upwards") if edge == "sell" else L("向下跌破", "broke down")
+        out.append(L(f"· 这只股票过去每次进入{'高抛区' if edge == 'sell' else '低吸区'}（共 {rec['n']} 次）之后 10 个交易日内：先{turn}的 {rec['turned']} 次，"
+                     f"先{broke}的 {rec['broke']} 次，两者都没有的 {rec['stayed']} 次；10 日涨跌中位数 {rec['median'] * 100:+.1f}%"
+                     + ("（样本少）" if rec["n"] < 10 else ""),
+                     f"· Each earlier entry of this stock into the {'sell' if edge == 'sell' else 'buy'} zone ({rec['n']} in all), within 10 sessions: {turn} first {rec['turned']} time(s), "
+                     f"{broke} first {rec['broke']}, neither {rec['stayed']}; median 10-session change {rec['median'] * 100:+.1f}%"
+                     + (" (a small sample)" if rec["n"] < 10 else "")))
+    return out
+
+
+def range_alert(symbol: str, rg, edge: str, *, bars, price: float, day_pct: float | None, analysis=None, rec: dict | None = None,
+                sf=None, sf_rec=None, plan=None, indices: dict | None = None, vix: dict | None = None,
+                index_bars: pd.DataFrame | None = None, usd: bool = True) -> tuple[str, str]:
+    """(title, body): the top of the range reached (sell-zone reminder), or the bottom with a stop-falling pattern."""
+    sell = edge == "sell"
+    if sell:
+        title = L(f"高抛提醒：{symbol} 到达震荡区间上沿", f"Sell-zone reminder: {symbol} at the top of its trading range")
+        first = L(f"{symbol} 现价 {num(price)}，进入震荡区间上沿的高抛区（{num(rg.sell_band[0])}–{num(rg.sell_band[1])}，阻力 {num(rg.resistance)}）。",
+                  f"{symbol} at {num(price)} has entered the sell zone at the top of its trading range ({num(rg.sell_band[0])}–{num(rg.sell_band[1])}, resistance {num(rg.resistance)}).")
+    else:
+        title = L(f"低吸区出现止跌形态：{symbol}", f"Stop-falling pattern in the buy zone: {symbol}")
+        first = L(f"{symbol} 现价 {num(price)}，在震荡区间下沿的低吸区（{num(rg.buy_band[0])}–{num(rg.buy_band[1])}，支撑 {num(rg.support)}），并且止跌形态已成立。",
+                  f"{symbol} at {num(price)} is in the buy zone at the bottom of its trading range ({num(rg.buy_band[0])}–{num(rg.buy_band[1])}, support {num(rg.support)}) "
+                  "and the stop-falling pattern is formed.")
+    out = [head("震荡区间", "The trading range")] + range_lines(rg, price, rec, edge)
+    if not sell and sf is not None:
+        out += [head("止跌形态", "The stop-falling pattern")] + stopfall_lines(sf, sf_rec)
+    bt = next((b for b in getattr(analysis, "backtests", []) or [] if b.key == "range_trading" and b.n_bars), None)
+    if bt is not None:
+        hr = L("没有完整交易", "no completed trades") if bt.hit_rate is None else L(f"胜率 {bt.hit_rate * 100:.0f}%（{bt.n_trades} 笔）", f"win rate {bt.hit_rate * 100:.0f}% ({bt.n_trades} trades)")
+        out += [head("这条规则在这只股票上的历史", "This rule's history on this stock"),
+                L(f"· 区间高抛低吸规则过去 {bt.years:.1f} 年：{hr}，累计 {bt.total_return * 100:+.0f}%（买入持有 {bt.bh_return * 100:+.0f}%），"
+                  f"最大回撤 {bt.max_dd * 100:.0f}%（买入持有 {bt.bh_max_dd * 100:.0f}%）。参数是通用默认值，没有针对这只股票调过。",
+                  f"· The range rule over the past {bt.years:.1f} years: {hr}, cumulative {bt.total_return * 100:+.0f}% (buy-and-hold {bt.bh_return * 100:+.0f}%), "
+                  f"max drawdown {bt.max_dd * 100:.0f}% (buy-and-hold {bt.bh_max_dd * 100:.0f}%). The parameters are generic defaults, not tuned to this stock.")]
+    if plan is not None:
+        mine = []
+        if sell and plan.next_level is not None:
+            mine.append(L(f"下一档减仓价 {num(plan.next_level)}（{gap(plan.next_level, price)}）", f"next trim level {num(plan.next_level)} ({gap(plan.next_level, price)})"))
+        if sell and plan.target_price:
+            mine.append(L(f"目标价 {num(plan.target_price)}（{gap(plan.target_price, price)}）", f"target {num(plan.target_price)} ({gap(plan.target_price, price)})"))
+        if not sell and plan.buy_levels:
+            mine.append(L("买入价位 " + " / ".join(num(x) for x in plan.buy_levels), "buy levels " + " / ".join(num(x) for x in plan.buy_levels)))
+        if plan.exit_below:
+            mine.append(L(f"底线价 {num(plan.exit_below)}（{gap(plan.exit_below, price)}）", f"bottom line {num(plan.exit_below)} ({gap(plan.exit_below, price)})"))
+        if mine and not plan.follow:
+            out += [head("你计划里的价位", "The levels in your plan"), "· " + L("；", "; ").join(mine)]
+    main = next(iter((indices or {}).values()), None)
+    pos = position_lines(symbol, bars, price, day_pct=day_pct, analysis=analysis, index=main, index_bars=index_bars, usd=usd)
+    if pos:
+        out += [head(f"{symbol} 现在的位置", f"Where {symbol} stands now")] + pos
+    mk = market_lines(indices or {}, vix)
+    if mk:
+        out += [head("同一时间的大盘", "The market at the same time")] + mk
+    out.append(head("怎么看", "How to read it"))
+    if sell:
+        out.append(L("· 这是区间规则的高抛信号：价格到了过去三个月反复受阻的位置。规则只在横盘时适用，一旦收盘突破作废位，就不再是“高抛”而是突破。",
+                     "· This is the range rule's sell-high signal: the price is where it has turned back repeatedly over the past three months. The rule only applies while "
+                     "the stock moves sideways; once a close passes the void level it is a breakout, not a sell-high."))
+        out.append(L("· 到了上沿不等于马上回落：看上面“过去每次进入高抛区之后”的统计，以及它相对大盘的强弱。",
+                     "· Reaching the top is not the same as turning down at once: see the count of what followed earlier entries above, and its strength against the market."))
+        out.append(L("· 是否卖、卖多少，对照你计划里写的减仓价位和比例；程序只提示条件到了，不会下单。",
+                     "· Whether to sell and how much is a matter of the trim levels and proportions in your plan; the program only says the condition is met and never places orders."))
+    else:
+        out.append(L("· 两件事同时成立才提醒：价格在区间下沿，并且止跌形态的四项条件都满足。只到下沿、还在下跌的，不提醒。",
+                     "· The alert needs both: the price at the bottom of the range and all four conditions of the stop-falling pattern. A price that is at the bottom but still falling raises nothing."))
+        out.append(L("· 形态成立说明跌势暂时停了，不保证不再跌：作废条件和区间作废位都写在上面。是否买、买多少由你决定；程序不会下单。",
+                     "· A formed pattern says the fall has paused, not that it cannot resume: its void condition and the range's void level are given above. "
+                     "Whether to buy and how much is yours to decide; the program never places orders."))
+    out.append(FOOT)
+    return tidy(title), tidy(first) + "\n" + tidy("\n".join(out))
+
+
+def index_stop_alert(st: kl.IndexState, sf, rec=None, *, others: dict | None = None, vix: dict | None = None) -> tuple[str, str]:
+    """(title, body) when an index that had broken down shows the stop-falling pattern."""
+    title = L(f"{st.name}出现止跌形态", f"{st.name}: stop-falling pattern formed")
+    out = [L(f"{st.name}（{st.symbol}）{'盘中' if st.live else f'{st.asof:%m-%d} 收盘'} {num(st.price)}（当日 {st.day_pct:+.2f}%），止跌形态的四项条件都已成立，"
+             f"这一轮的低点是 {num(sf.low)}（{sf.low_date:%m-%d}）。",
+             f"{st.name} ({st.symbol}) {'intraday' if st.live else f'close of {st.asof:%m-%d}'} {num(st.price)} ({st.day_pct:+.2f}% on the day): all four conditions of the "
+             f"stop-falling pattern hold; the low of this leg is {num(sf.low)} ({sf.low_date:%m-%d}).")]
+    out += [head("止跌形态", "The stop-falling pattern")] + stopfall_lines(sf, rec, st.live)
+    out += [head("现在的位置", "Where it stands now")] + index_position(st) + _standing(st, set()) + market_lines(others or {}, vix, skip=st.symbol)
+    up = next_levels(st, "up", 4)
+    if up:
+        out += [head("上方要收复的关键位", "Key levels to regain above")] + up
+    out.append(head("接下来看什么", "What to watch next"))
+    out.append(L(f"· 低点 {num(sf.low)} 是这次形态的底线：收盘跌破就作废，之前的破位仍然有效。",
+                 f"· The low {num(sf.low)} is the line for this pattern: a close under it voids the pattern and the earlier break stands."))
+    above = st.above()
+    if above:
+        out.append(L(f"· 止跌之后的第一道关口是{label(above[0])}（距现价 {gap(above[0].value, st.price)}）；站不回去的止跌多半只是下跌中的停顿。",
+                     f"· The first hurdle after a stop is {_the_label(above[0])} ({gap(above[0].value, st.price)} from the price); a stop that cannot regain it is usually a pause in the decline."))
+    out.append(FOOT)
+    return tidy(title), tidy("\n".join(out))
 
 
 def digest_lines(indices: dict, vix: dict | None = None) -> list[str]:

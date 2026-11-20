@@ -22,7 +22,7 @@ from .briefing import RANGE_TEXT
 from .engine import Engine, Snapshot
 
 log = logging.getLogger("stockdesk.headless")
-MAIL_KINDS = ("bottoming", "plan_level", "flow", "index_level", "congress")
+MAIL_KINDS = ("bottoming", "plan_level", "flow", "index_level", "congress", "range")
 
 
 def _px(x: float) -> str:
@@ -83,6 +83,9 @@ def digest(snap: Snapshot, now: float | None = None) -> tuple[str, str]:
             out.append(f"  {who}" + L("：", ": ") + L("，", ", ").join(bits))
             for _, _, title, _ in p.events:
                 out.append(f"    ● {title}")
+            for level, text in p.flags:
+                if L("止跌形态", "stop-falling pattern") in text:
+                    out.append(f"    ○ {text}")
             if p.review_due:
                 out.append(L("    ● 到了你定的复盘日", "    ● Your review date has arrived"))
 

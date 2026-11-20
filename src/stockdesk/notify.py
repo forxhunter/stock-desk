@@ -30,7 +30,7 @@ def settings(cfg: dict | None) -> dict:
     return {"enabled": bool(c.get("enabled")), "to": str(c.get("to") or "").strip(),
             "host": str(c.get("smtp_host") or "").strip(), "port": int(c.get("smtp_port") or 587),
             "user": str(c.get("username") or "").strip(),
-            "kinds": list(c.get("kinds") or ["bottoming", "plan_level", "flow", "index_level", "congress"])}
+            "kinds": list(c.get("kinds") or ["bottoming", "plan_level", "flow", "index_level", "congress", "range"])}
 
 
 def ready(s: dict) -> str | None:

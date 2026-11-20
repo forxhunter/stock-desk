@@ -179,6 +179,44 @@ def strat_range(bars: pd.DataFrame, **over) -> pd.Series:
     return simulate(bars, over)[0]
 
 
+def edge_record(bars: pd.DataFrame, p: dict | None = None, edge: str = "sell", horizon: int = 10) -> dict | None:
+    """What followed the earlier entries into an edge zone of a valid range, within ``horizon`` bars.
+
+    An entry is the first close inside the zone (top ``zone`` share of the range for "sell", bottom for "buy").
+    With the range frozen at the entry: "turned" = a close back at or beyond the middle of the range came first;
+    "broke" = a close more than ``break_atr`` x ATR outside the edge came first; otherwise "stayed"."""
+    p = params(p)
+    f = range_frame(bars, p)
+    c = bars["close"].to_numpy(float)
+    valid, pos = f["valid"].to_numpy(bool), f["pos"].to_numpy(float)
+    sup, res, atr = (f[k].to_numpy(float) for k in ("support", "resistance", "atr"))
+    z, brk = float(p["zone"]), float(p["break_atr"])
+    top = edge == "sell"
+    inside = valid & ((pos >= 1 - z) if top else (pos <= z))
+    out = {"n": 0, "turned": 0, "broke": 0, "stayed": 0, "moves": []}
+    T = len(c)
+    for t in range(1, T - horizon):
+        if not inside[t] or inside[t - 1]:
+            continue
+        mid, a = (sup[t] + res[t]) / 2.0, atr[t]
+        what = "stayed"
+        for u in range(t + 1, t + horizon + 1):
+            if (c[u] > res[t] + brk * a) if top else (c[u] < sup[t] - brk * a):
+                what = "broke"
+                break
+            if (c[u] <= mid) if top else (c[u] >= mid):
+                what = "turned"
+                break
+        out["n"] += 1
+        out[what] += 1
+        out["moves"].append(c[t + horizon] / c[t] - 1)
+    if not out["n"]:
+        return None
+    out["median"] = float(np.median(out["moves"]))
+    del out["moves"]
+    return out
+
+
 # ---- current state for the UI --------------------------------------------------------------
 
 @dataclass

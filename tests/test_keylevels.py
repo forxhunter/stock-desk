@@ -164,6 +164,7 @@ def test_plan_alert_carries_a_full_write_up_without_holdings(env, monkeypatch):
     _index_market(market)
     monkeypatch.setattr(engine_mod.keylevels, "session_live", lambda *a, **k: False)
     px = float(market.daily["CCC"]["close"].iloc[-1])
+    eng.cfg.set("alerts.stop_fall.require_for_buy", False)         # this test is about the write-up, not about the wait
     monkeypatch.setattr(plans, "load", lambda path=None: {"CCC": {
         "start": "2026-01-01", "end": "2027-06-01", "buy_below": [px * 1.1, px * 0.5], "target_price": px * 2,
         "exit_below": px * 0.4, "max_weight_pct": 10}})

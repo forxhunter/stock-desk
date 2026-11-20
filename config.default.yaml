@@ -29,6 +29,17 @@ alerts:
     min_score: 5
     min_volume_score: 2         # 放量见底 / 放量上涨确认 / 涨时量大于跌时量，三项里至少成立几项
     min_drawdown_pct: 20.0      # 距 52 周高点至少跌这么多才谈得上“筑底”
+  stop_fall:                    # 止跌形态（完整公式在 src/stockdesk/quant/stopfall.py 顶部）：下跌前提 + 低点守住 + 反转结构 + 站回 5 日线
+    require_for_buy: true       # 计划里的买入价位：价格跌到价位不提醒，等止跌形态成立才提醒（false = 到价就提醒）
+    lookback: 20                # 低点 t* 取最近多少个交易日的最低点
+    min_drop_atr: 3.0           # 下跌前提：低点比此前 20 日最高至少低几个 ATR
+    hold: 3                     # 低点守住：至少多少个交易日没有再创新低
+    ma: 5                       # 收盘要站回的短期均线
+  range:                        # 震荡区间（quant/range_trading.py）
+    enabled: true
+    sell: true                  # 到达区间上沿（高抛区）时提醒
+    repeat_days: 7              # 同一只股票停在高抛区时，多少天内不重复提醒
+                                # 到达区间下沿（低吸区）只有在止跌形态成立时才提醒
   index_levels:                 # 大盘关键位破位提醒（quant/keylevels.py）：指数跌破均线 / N 日低点 / 回撤线 / 支撑区 / 你设的价位
     enabled: true
     symbols: []                 # 留空 = 标普 500（^GSPC）和纳斯达克综合指数（^IXIC）；可改成 ["^GSPC", "^NDX", "^SOX"] 等 Yahoo 代码
@@ -39,6 +50,8 @@ alerts:
     zones: true                 # 一年内波段高低点聚成的支撑区
     levels: {}                  # 你自己盯的价位，例如 {"^GSPC": [7000, 6800], "^IXIC": [23000]}
     up: true                    # 也记录向上收复 / 创 52 周新高（只在提醒页显示，不弹窗、不发邮件）
+    break_alerts: true          # 跌破关键位时提醒；改成 false 就不提醒跌破，只在指数出现止跌形态时提醒
+    stop_fall: true             # 破位或回撤超过 5% 之后，指数出现止跌形态时提醒
     lookback_days: 5            # 提醒正文里列出最近几个交易日发生、至今没有收复的破位
     email_min_severity: warn    # 发邮件的最低级别：warn = 盘中跌破重要关键位就发；high = 只发收盘确认的
 
@@ -52,7 +65,7 @@ notify:
     smtp_host: ""               # 例如 smtp.gmail.com / smtp.qq.com / smtp.163.com
     smtp_port: 587              # 587 = STARTTLS，465 = SSL
     username: ""
-    kinds: [bottoming, plan_level, flow, index_level, congress]   # 哪些提醒发邮件：筑底信号、到达你在计划里写的价位、异动扫描（只发高级别）、大盘关键位破位、议员交易
+    kinds: [bottoming, plan_level, flow, index_level, congress, range]   # 哪些提醒发邮件：筑底信号、到达你在计划里写的价位、异动扫描（只发高级别）、大盘关键位破位、议员交易、震荡区间上下沿
 
 briefing:                       # 每日简报（分析中心第一页）
   cooloff_days: 5               # 卖出后多少个交易日内算“冷静期”
@@ -211,9 +224,13 @@ congress:
   short_days: 21
   min_calls: 10                 # “★ 准”至少要有多少笔可评估的交易（且 95% 区间整体高于 50%）
   watch_calls: 5                # “偏准”至少多少笔（且六成以上方向正确）
+  window_days: 730              # 评级的滚动窗口：只算最近这么多天里的交易，旧的自动滚出，所以评级会随时间变
+  recent_days: 180              # “近期表现”看最近多少天的交易（按 short_days 评估）；近期转差的下调一级，明显转好的上调
+  recent_min: 5                 # 近期至少多少笔才据此调整评级
+  alert_scope: accurate         # accurate = 只有评级偏准以上的议员有新申报才提醒；accurate_or_watchlist = 任何议员买卖你的自选也提醒
   alert_days: 7                 # 只提醒最近几天披露的申报
   consensus_days: 90            # 统计“其他议员在同一只股票上”的时间窗
-  email_min_severity: warn      # warn = 评级偏准以上的议员有新申报，或有人买卖你的自选；high = 两者同时满足
+  email_min_severity: warn      # warn = 评级偏准以上的议员有新申报；high = 他买卖的还是你自选里的股票
   max_emails_per_day: 6
   senate:                       # 参议院的申报在 efdsearch.senate.gov，查询前必须先同意该站点首页的使用协议
     enabled: false
