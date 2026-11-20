@@ -299,7 +299,7 @@ def watch_rows(views, index_bars: pd.DataFrame | None, index_name: str) -> tuple
 
 
 def index_alert(st: kl.IndexState, direction: str, hits: list, *, others: dict | None = None, vix: dict | None = None,
-                views=None, index_bars: pd.DataFrame | None = None, hold: int = 10) -> tuple[str, str]:
+                views=None, index_bars: pd.DataFrame | None = None, hold: int = 10, playbook: list[str] | None = None) -> tuple[str, str]:
     """(title, body) for the levels ``hits`` that the index broke on its latest bar."""
     top = hits[0]
     down = direction == "down"
@@ -332,6 +332,9 @@ def index_alert(st: kl.IndexState, direction: str, hits: list, *, others: dict |
                                    "a break on heavy volume carries more weight than one on light volume).")
         out.append(L(f"· 状态：收盘确认（{st.asof:%Y-%m-%d}）。{vol}", f"· Status: confirmed by the close ({st.asof:%Y-%m-%d}).{vol}"))
 
+    if playbook:
+        out.append(head("你的预案", "Your playbook"))
+        out += playbook
     out.append(head("现在的位置", "Where it stands now"))
     out += index_position(st)
     if down:

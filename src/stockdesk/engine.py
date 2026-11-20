@@ -11,7 +11,7 @@ from typing import Callable
 
 import pandas as pd
 
-from . import briefing, congress, credentials, flow, insight, notify, paths, plans
+from . import briefing, congress, credentials, flow, insight, notify, paths, plans, playbook
 from .adapters import congress as congress_src
 from .adapters.base import AdapterError, AdapterUnavailable, BrokerAdapter, RateLimited
 from .adapters.ibkr_cp import IbkrClientPortalAdapter
@@ -27,7 +27,7 @@ from .behavior.demo import make_demo_trades
 from .config import Config
 from .i18n import L
 from .models import Alert, BrokerData, MarketOdds, NewsItem, Position, Trade
-from .quant import keylevels, optimizer, stopfall
+from .quant import keylevels, optimizer, scenario, stopfall
 from .quant import range_trading as rt
 from .quant.analysis import Analysis, analyze
 from .quant.bottom import LABELS as bottom_labels
@@ -107,6 +107,7 @@ class Snapshot:
     indices: dict[str, keylevels.IndexState] = field(default_factory=dict)   # market indices and their key levels
     vix: dict | None = None                                       # {price, chg, pct}
     congress: congress.CongressReport | None = None               # trades disclosed by members of Congress
+    playbook: playbook.Playbook | None = None                     # drawdown rungs, their record, the user's own actions
 
     def get(self, symbol: str) -> TickerView | None:
         return next((t for t in self.tickers if t.symbol == symbol), None)
@@ -143,6 +144,9 @@ class Engine:
         self._building: Snapshot | None = None
         self._cg: congress.CongressReport | None = None
         self._sf_cache: dict[tuple, tuple] = {}            # (symbol, last bar, bars, last close) -> (pattern, its record)
+        self._studies: dict[str, tuple] = {}              # symbol -> (key, drawdown study of the index)
+        self._book: dict = {}                             # the user's playbook file
+        self._books: dict[str, playbook.IndexBook] = {}
         self._cg_bars: dict[str, pd.DataFrame] = {}       # price history of the stocks members traded
         self._cg_missing: set[str] = set()                # tickers already looked up in the local cache
         self._senate_send = None                          # tests replace the Senate site with a function
@@ -845,6 +849,7 @@ class Engine:
                                   + self._range_alerts(snap) + self._flow_alerts() + self._congress_alerts(snap))
         finally:
             self._building = None
+        self._playbook(snap)
         snap.flow = self._flow if self.cfg.get("flow.enabled", True) else None
         snap.congress = self._cg if self.cfg.get("congress.enabled", True) else None
         self._behaviour(snap, positions, prices)
@@ -1163,24 +1168,85 @@ class Engine:
     def _index_states(self, snap: Snapshot) -> None:
         c = self._index_cfg()
         levels = c.get("levels") or {}
-        self._idx_bars = {}
-        for sym, name in self._index_symbols().items():
+        self._idx_bars, self._books = {}, {}
+        names = self._index_symbols()
+        if names and self.cfg.get("playbook.enabled", True):
+            try:
+                playbook.ensure_template(list(names))          # empty entries only: the actions are the user's to write
+                self._book = playbook.load()
+            except Exception:
+                log.exception("playbook file")
+                self._book = {}
+        else:
+            self._book = {}
+        for sym, name in names.items():
             try:
                 bars, live = self._merged_index_bars(sym)
                 if bars is None:
                     continue
-                st = keylevels.state(sym, bars, c, name=name, live=live, user_levels=levels.get(sym) or (),
+                st = keylevels.state(sym, bars, self._rung_cfg(c, sym), name=name, live=live, user_levels=levels.get(sym) or (),
                                      long=self._long.get(sym))
                 if st is not None:
                     snap.indices[sym] = st
                     self._idx_bars[sym] = bars
             except Exception:
                 log.exception("index levels failed for %s", sym)
+        if self._book:
+            try:
+                first = playbook.build(snap.indices, {s: self._study(s) for s in snap.indices}, self._book)
+                self._books = {ib.symbol: ib for ib in first.indices}
+            except Exception:
+                log.exception("playbook rungs failed")
         vd = self._daily.get("^VIX")
         if snap.indices and vd is not None and len(vd) >= 2:
             px, prev, _ = self._session_stats(self._intraday.get("^VIX"), vd)
             if not math.isnan(px) and not math.isnan(prev) and prev:
                 snap.vix = {"price": px, "chg": px - prev, "pct": (px / prev - 1) * 100}
+
+    def _rung_cfg(self, c: dict, sym: str) -> dict:
+        """The key-level settings with the rungs of the user's playbook added to the drawdown lines."""
+        mine = [float(r) for r in (self._book.get(sym) or {})]
+        if not mine:
+            return c
+        base = [float(x) for x in keylevels.params(c)["drawdowns"]]
+        return {**c, "drawdowns": sorted(set(base) | set(mine))}
+
+    def _study(self, sym: str) -> scenario.Study:
+        """What followed each drawdown rung in the index's own history (computed once per day of data)."""
+        long, bars = self._long.get(sym), self._idx_bars.get(sym)
+        if bars is None:
+            return scenario.Study()
+        full = keylevels.join(long, bars)
+        key = (len(full), full.index[-1], float(full["close"].iloc[-1]))
+        hit = self._studies.get(sym)
+        if hit is None or hit[0] != key:
+            c = full["close"].astype(float)
+            hit = self._studies[sym] = (key, scenario.study(c[c.index >= "1950-01-01"]))
+        return hit[1]
+
+    def _playbook(self, snap: Snapshot) -> None:
+        if not self._book or not snap.indices:
+            return
+        lines: dict[str, dict] = {}
+        for p in snap.plans:
+            if p.follow:
+                continue                               # those levels are written in another stock's prices
+            row = {}
+            if p.exit_below:
+                row[L("底线价", "bottom line")] = p.exit_below
+            for x in p.buy_levels:
+                row[L(f"买入价位 {plans.fmt(x)}", f"buy level {plans.fmt(x)}")] = x
+            if row:
+                lines[p.symbol] = row
+        for v in snap.tickers:
+            if v.plan.get("stop"):
+                lines.setdefault(v.symbol, {})[L("止损价", "stop")] = float(v.plan["stop"])
+        main = next(iter(snap.indices))
+        try:
+            snap.playbook = playbook.build(snap.indices, {s: self._study(s) for s in snap.indices}, self._book,
+                                           snap.tickers, self._idx_bars.get(main), lines)
+        except Exception:
+            log.exception("playbook failed")
 
     def _index_alerts(self, snap: Snapshot) -> list[Alert]:
         """An alert when an index breaks a key level on its latest bar: intraday first, then once more when the
@@ -1222,8 +1288,14 @@ class Engine:
                     continue
                 top = hits[0]
                 try:
+                    mine = []
+                    ib = self._books.get(sym)
+                    if direction == "down" and ib is not None:
+                        for x in hits:
+                            if x.kind == "dd":
+                                mine += playbook.rung_lines(ib, x.n)
                     title, body = insight.index_alert(now, direction, hits, others=snap.indices, vix=snap.vix,
-                                                      views=snap.tickers, index_bars=bars, hold=hold)
+                                                      views=snap.tickers, index_bars=bars, hold=hold, playbook=mine)
                 except Exception:
                     log.exception("index write-up failed for %s", sym)
                     continue

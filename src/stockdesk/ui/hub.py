@@ -21,7 +21,7 @@ from . import render
 from . import theme as T
 from . import win11
 
-TABS = ["briefing", "portfolio", "alerts", "pretrade", "research", "flow", "congress", "sources"]
+TABS = ["briefing", "portfolio", "alerts", "pretrade", "research", "flow", "congress", "playbook", "sources"]
 
 
 class NoWheel(QObject):
@@ -178,6 +178,19 @@ class HubWindow(QWidget):
         self.congress.anchorClicked.connect(self._open_link)
         self.tabs.addTab(self.congress, L("议员交易", "Congress trades"))
 
+        # -- drawdown playbook
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        pe = QPushButton(L("编辑我的预案…", "Edit my playbook…"))
+        pe.clicked.connect(self._edit_playbook)
+        bar.addWidget(pe)
+        lay.addLayout(bar)
+        self.playbook = _browser()
+        lay.addWidget(self.playbook)
+        self.tabs.addTab(w, L("预案", "Playbook"))
+
         # -- sources / settings
         self.tabs.addTab(self._build_sources(), L("数据源与设置", "Sources && settings"))
 
@@ -205,6 +218,7 @@ class HubWindow(QWidget):
         hot = sum(1 for i in snap.flow.items if i.severity != "info") if snap.flow else 0
         self.tabs.setTabText(TABS.index("flow"), L(f"异动扫描（{hot}）", f"Unusual-activity scan ({hot})") if hot else L("异动扫描", "Unusual-activity scan"))
         self._keep_scroll(self.congress, render.congress_html(snap.congress, self.pal, {v.symbol for v in snap.tickers}))
+        self._keep_scroll(self.playbook, render.private_html(L("预案", "playbook")) if T.PRIVATE else render.playbook_html(snap.playbook, self.pal))
         self.status.setHtml(render.sources_html(snap))
         self.tabs.setTabText(TABS.index("alerts"), L(f"行为提醒（{len(snap.alerts)}）", f"Behaviour alerts ({len(snap.alerts)})") if snap.alerts else L("行为提醒", "Behaviour alerts"))
 
@@ -227,6 +241,12 @@ class HubWindow(QWidget):
             self.snooze_requested.emit(s[7:], float(self.cfg.get("behavior.snooze_days", 7)))
         elif s.startswith("dismiss:"):
             self.dismiss_requested.emit(s[8:])
+
+    def _edit_playbook(self) -> None:
+        """Open the user's playbook file in their own editor (the program never writes actions into it)."""
+        from .. import playbook
+        playbook.ensure_template(["^GSPC", "^IXIC"])
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(playbook.path())))
 
     @staticmethod
     def _open_link(url: QUrl) -> None:

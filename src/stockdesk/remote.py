@@ -28,7 +28,7 @@ def settings(cfg: dict | None) -> dict:
 
 
 def user_files() -> list[Path]:
-    files = [paths.WATCHLIST, paths.USER_CONFIG, paths.DATA_DIR / "plans.yaml"]
+    files = [paths.WATCHLIST, paths.USER_CONFIG, paths.DATA_DIR / "plans.yaml", paths.DATA_DIR / "playbook.yaml"]
     files += sorted(p for p in paths.RH_IMPORT_DIR.glob("*") if p.suffix.lower() in (".csv", ".xlsx"))
     return [f for f in files if f.is_file()]
 
@@ -112,7 +112,7 @@ def remote_state(s: dict, runner=subprocess.run) -> tuple[dict[str, str], float 
     """(path -> sha256 on the remote, seconds since its last run or None, last line of its run log)."""
     cmd = (f"cd {s['dir']} && {{ find src -name '*.py' -type f; "
            "ls config.default.yaml requirements-server.txt watchlist.sample.yaml watchlist.yaml data/config.yaml "
-           "data/plans.yaml 2>/dev/null; "
+           "data/plans.yaml data/playbook.yaml 2>/dev/null; "
            "find data/imports/robinhood -maxdepth 1 -type f \\( -iname '*.csv' -o -iname '*.xlsx' \\) 2>/dev/null; } "
            "| sort | xargs -d '\\n' sha256sum; echo ---; stat -c %Y data/cron.log 2>/dev/null || echo 0; date +%s; "
            "tail -n 1 data/cron.log 2>/dev/null")

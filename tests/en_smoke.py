@@ -164,9 +164,20 @@ def main() -> int:
     texts["index_stop"] = "\n".join(insight.index_stop_alert(st0, stopfall.state(done), None, others=snap.indices, vix=snap.vix))
     texts["plan_flags"] = "\n".join(t for p in snap.plans for _, t in p.flags)
 
+    from stockdesk import playbook as pbm                        # the playbook page, with and without the user's entries
+    texts["playbook"] = render.playbook_html(snap.playbook, pal) + render.playbook_html(None, pal)
+    texts["playbook_file"] = pbm.path().read_text(encoding="utf-8")
+    ib = snap.playbook.indices[0]
+    texts["playbook_alert"] = " | ".join(pbm.rung_lines(ib, ib.rungs[0].rung))
+    if "[Your playbook]" not in texts["alert_text"]:
+        problems_pb = ["the playbook section is missing from the index alert"]
+    else:
+        problems_pb = []
+
     kinds = {a.kind for a in snap.alerts}
     need = {"bottoming", "plan_level", "flow", "index_level", "congress"}
     problems = [f"missing alert kinds: {sorted(need - kinds)}"] if need - kinds else []
+    problems += problems_pb
     if not mails:
         problems.append("no mail was produced")
     if "[Position]" not in "".join(v for k, v in texts.items() if k.startswith("analysis_")):

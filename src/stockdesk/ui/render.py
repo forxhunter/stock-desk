@@ -389,6 +389,90 @@ def congress_html(rep, pal: T.Palette, watch: set[str] | None = None) -> str:
     return "".join(out)
 
 
+def playbook_html(pb, pal: T.Palette) -> str:
+    """The drawdown playbook: rungs, their record, the holdings' sensitivity, the user's own actions."""
+    out = [_note(L("<b>大盘预案</b>：指数较 52 周收盘高点每多跌一档，点位在哪、历史上到过这一档之后发生了什么、按 β 推算你的持仓大约会怎样。"
+                   "“到了这一档做什么”由你自己写（下面每一档的最后一栏）；程序只在条件到达时把你写的话原样提醒你。这不是预测，也不是买卖建议，程序不会下单。",
+                   "<b>Market playbook</b>: for each further rung of the index's fall from its 52-week closing high, where the level is, what followed that rung in the past, "
+                   "and roughly what your holdings would do by their betas. What to do at each rung is yours to write (the last column of each row); the program only "
+                   "quotes your words back when the condition is met. This is not a prediction or a buy / sell recommendation, and the program places no orders."), T.AMBER)]
+    if pb is None or not pb.indices:
+        return "".join(out) + _note(L("还没有指数数据，或预案已关闭（data/config.yaml 里 playbook.enabled / alerts.index_levels.enabled）。",
+                                      "No index data yet, or the playbook is off (playbook.enabled / alerts.index_levels.enabled in data/config.yaml)."))
+    pct = lambda x: "—" if x is None else f"{x * 100:+.1f}%"
+    for ib in pb.indices:
+        when = f"{ib.peak_date:%m-%d}" if ib.peak_date is not None else ""
+        out.append(_h(esc(ib.name), L(f"现价 {ib.price:,.0f}{'（盘中）' if ib.live else ''} · 52 周收盘高点 {ib.peak:,.0f}（{when}）· 已回落 {abs(ib.depth_pct):.1f}%"
+                                      f" · 统计自 {ib.since:%Y} 年，共 {ib.episodes} 次跌到 −10% 以上并已收复",
+                                      f"now {ib.price:,.0f}{' (intraday)' if ib.live else ''} · 52-week closing high {ib.peak:,.0f} ({when}) · {abs(ib.depth_pct):.1f}% below it"
+                                      f" · record since {ib.since:%Y}: {ib.episodes} finished falls of 10% or more") if ib.since is not None else ""))
+        head = "".join(f"<th {_TH} align='{'left' if n in (0, 8) else 'right'}'>{x}</th>" for n, x in enumerate(
+            (L("档位", "Rung"), L("点位", "Level"), L("距现价", "From the price"), L("状态", "Status"), L("到过几次", "Times reached"),
+             L("继续跌到下一档", "Went on to the next rung"), L("到最低点还跌（中位 / 最差一成）", "Further fall to the low (median / worst tenth)"),
+             L("之后 3 / 12 个月中位数（上涨比例）", "Median 3 / 12 months later (share up)"), L("你的预案", "Your action"))))
+        rows = []
+        for r in ib.rungs:
+            st = r.stat
+            if r.reached is not None:
+                status = _span(L(f"{r.reached:%m-%d} 收盘已到", f"reached at the close of {r.reached:%m-%d}"), T.RED)
+            elif r.touched:
+                status = _span(L("盘中已到，未收盘确认", "touched intraday, no close yet"), T.AMBER)
+            else:
+                status = _span(L("未到", "ahead"), T.DIM)
+            deeper = "—" if st is None or st.deeper is None else f"{st.deeper * 100:.0f}% → −{st.next_rung}%"
+            more = "—" if st is None or not st.more else f"{st.more[0]:+.1f}% / {st.more[1]:+.1f}%"
+            fwd = "—"
+            if st is not None and 63 in st.fwd and 252 in st.fwd:
+                fwd = f"{pct(st.fwd[63][1])} ({st.fwd[63][2] * 100:.0f}%) / {pct(st.fwd[252][1])} ({st.fwd[252][2] * 100:.0f}%)"
+            mine = esc(r.action) if r.action else _span(L("（未填写）", "(not written)"), T.DIM)
+            rows.append(f"<tr><td {_TD}><b>−{r.rung}%</b></td><td {_TD} align='right'>{r.level:,.0f}</td><td {_TD} align='right'>{r.gap_pct:+.1f}%</td>"
+                        f"<td {_TD} align='right'>{status}</td><td {_TD} align='right'>{st.n if st else 0}</td><td {_TD} align='right'>{deeper}</td>"
+                        f"<td {_TD} align='right'>{more}</td><td {_TD} align='right'>{fwd}</td><td {_TD}>{mine}</td></tr>")
+        out.append(f'<table cellspacing="0" width="100%"><tr>{head}</tr>{"".join(rows)}</table>')
+    out.append(_note(L("“到最低点还跌”从到达这一档当天的收盘算起；“之后”也是从那天算。样本只有二三十次，彼此差别很大（浅的 −10% 就止住，深的超过 −50%），只能看个大概。",
+                       "'Further fall to the low' is counted from the close of the day the rung was reached, and so is 'later'. There are only a few dozen cases and they "
+                       "differ widely (the shallow ones stopped at −10%, the deep ones went beyond −50%): a rough picture only.")))
+
+    out.append(_h(L("你的持仓大约会怎样", "What your holdings would roughly do"),
+                  L(f"按每只股票对 {pb.stress_index} 的 β 推算 · 只是算术，不是预测", f"by each stock's beta to the {pb.stress_index} · arithmetic, not a forecast")))
+    if pb.exposures and pb.stress:
+        head = f"<th {_TH}>{L('持仓', 'Holding')}</th><th {_TH} align='right'>{L('占持仓', 'Share')}</th><th {_TH} align='right'>β</th>" + "".join(
+            f"<th {_TH} align='right'>{L(f'指数到 −{r}%（再 {m * 100:+.1f}%）', f'index at −{r}% ({m * 100:+.1f}% more)')}</th>" for r, m, _, _ in pb.stress)
+        rows = []
+        for k, e in enumerate(pb.exposures):
+            cells = ""
+            for _, _, _, per in pb.stress:
+                _, mv, px = per[k]
+                if mv is None:
+                    cells += f"<td {_TD} align='right'>—</td>"
+                    continue
+                hit = [name for name, lv in (pb.lines.get(e.symbol) or {}).items() if px <= lv < e.price]
+                flag = f'<br><span style="color:{T.AMBER}; font-size:8.5pt;">{L("低于你的", "under your ")}{esc(L("、", ", ").join(hit))}</span>' if hit else ""
+                cells += f"<td {_TD} align='right'>{_span(pct(mv), pal.sign(mv))}　≈ {T.price(px)}{flag}</td>"
+            b = "—" if e.beta is None else f"{e.beta:.1f}" + (L("（周）", " (weekly)") if e.kind == "weekly" else "")
+            rows.append(f"<tr><td {_TD}><b>{esc(e.symbol)}</b></td><td {_TD} align='right'>{e.weight * 100:.0f}%</td><td {_TD} align='right'>{b}</td>{cells}</tr>")
+        total = "".join(f"<td {_TD} align='right'><b>{_span(pct(t), pal.sign(t or 0))}</b></td>" for _, _, t, _ in pb.stress)
+        rows.append(f"<tr><td {_TD}><b>{L('持仓合计', 'All holdings')}</b></td><td {_TD}></td><td {_TD}></td>{total}</tr>")
+        out.append(f'<table cellspacing="0" width="100%"><tr>{head}</tr>{"".join(rows)}</table>')
+        out.append(_note(L("β 取近 120 个交易日的日收益（不在美股时段交易的股票用近两年的周收益）。β 是平时测出来的，大跌时个股之间的联动通常会变强，"
+                           "实际跌幅更可能比这里算的大。“低于你的…”表示按这个推算价，会跌破你自己在计划里写的那条线。现金没有计入。",
+                           "Betas use the daily returns of the last 120 sessions (weekly returns of the last two years for stocks that trade in other hours). They are measured "
+                           "in ordinary times; in a sell-off stocks usually move together more, so the real fall is more likely larger than this arithmetic. "
+                           "'Under your …' means the estimated price would be below that line of your own plan. Cash is not counted.")))
+    else:
+        out.append(_note(L("没有持仓，或已经在最深一档之下，无法测算。", "No holdings, or already under the lowest rung shown: nothing to estimate.")))
+
+    out.append(_h(L("你的总体原则", "Your overall rules")))
+    out.append(f'<p style="margin:4px 0 4px 10px; line-height:150%;">{esc(pb.rules).replace(chr(10), "<br>")}</p>' if pb.rules
+               else _note(L("（未填写）", "(not written)"), T.DIM))
+    out.append(_note(L(f"预案写在 {esc(pb.path)}（不进 git，会同步到常开的那台机器）。每一档下面写你自己的动作，“rules” 写总体原则。"
+                       "可以回答的问题：这一档的总仓位 / 现金上限？哪些持仓先处理、依据是什么？想加仓需要什么条件（例如止跌形态成立）、每次最多多少？这一档明确不做什么？",
+                       f"The playbook lives in {esc(pb.path)} (not in git; it is synced to the always-on machine). Write your own action under each rung and your overall rules under 'rules'. "
+                       "Questions an entry can answer: the cap on total exposure / cash at this rung? Which holdings first, and on what grounds? "
+                       "What must be true before adding (for example the stop-falling pattern), and how much at most? What is explicitly not done at this rung?")))
+    return "".join(out)
+
+
 # ---- daily briefing ---------------------------------------------------------------------------
 
 _FLAG = {"high": (T.RED, "●"), "warn": (T.AMBER, "●"), "info": (T.BLUE, "●")}

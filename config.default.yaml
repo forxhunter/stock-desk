@@ -214,6 +214,11 @@ remote:
   dir: stock-desk               # 对方主目录下的文件夹
   auto_sync: true
 
+# 大盘预案（分析中心 → 预案）：每一档回撤的点位、历史上到过这一档之后的情况、按持仓 β 测算的影响。
+# “到了这一档做什么”写在 data/playbook.yaml 里，由你自己写；程序只在条件到达时把你写的话原样提醒你。
+playbook:
+  enabled: true
+
 # 议员交易：两院议员按《股票法案》公开申报的股票买卖（规则见 src/stockdesk/congress.py 顶部）。目前读取众议院书记官网站的官方申报。
 congress:
   enabled: true
