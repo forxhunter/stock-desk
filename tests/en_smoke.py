@@ -18,6 +18,7 @@ import yaml  # noqa: E402
 
 from stockdesk import flow, headless, i18n, notify, paths, plans  # noqa: E402
 from stockdesk.config import Config  # noqa: E402
+from stockdesk import engine as engine_mod  # noqa: E402
 from stockdesk.engine import Engine  # noqa: E402
 from stockdesk.models import Position, Trade  # noqa: E402
 from stockdesk.store import Store  # noqa: E402
@@ -25,6 +26,7 @@ from stockdesk.ui import render, theme as T  # noqa: E402
 from stockdesk.watchlist import Watchlist  # noqa: E402
 from test_engine_misc import FakeMarket, _Broker  # noqa: E402
 from test_range_trading import _fall_then_base  # noqa: E402
+from test_keylevels import _index_market  # noqa: E402
 
 CJK = re.compile(r"[一-鿿、-〿＀-￯]+")   # U+3000 is only used as spacing
 
@@ -50,6 +52,8 @@ def main() -> int:
     home[["open", "high", "low", "close"]] *= 1000.0
     market.daily["HOME.KS"] = home
     market.daily["EUR1.F"] = market.daily["AAA"].copy()
+    _index_market(market)                              # an S&P that breaks its key levels on the last bar
+    engine_mod.keylevels.session_live = lambda *a, **k: False
     for sym, rate in (("EURUSD=X", 1.25), ("KRWUSD=X", 0.00125)):
         fx = market.daily["SPY"].copy()
         fx[["open", "high", "low", "close"]] = rate
@@ -84,12 +88,14 @@ def main() -> int:
           "timestamp": time.time() - 60, "title": "Will AAA beat?", "event_slug": "ev", "outcome": "Yes", "outcome_index": 0}],
         {"ev": {"slug": "ev", "title": "E", "tags": [{"label": "Fed"}], "markets": [
             {"conditionId": "0xc1", "outcomes": '["Yes", "No"]', "outcomePrices": '["0.55", "0.45"]', "volume24hr": 90000.0,
-             "oneHourPriceChange": 0.09}]}}, {"AAA": ["AAA"]}, None)
+             "oneHourPriceChange": 0.09, "oneDayPriceChange": 0.1, "volumeNum": 900000.0, "liquidityNum": 50000.0,
+             "endDateIso": "2027-03-01"}]}}, {"AAA": ["AAA"]}, None)
     import pandas as pd
     far = f"{pd.Timestamp.now() + pd.Timedelta(days=30):%Y-%m-%d}"
     calls = pd.DataFrame([{"contractSymbol": "AAA1C", "strike": 400.0, "lastPrice": 5.0, "volume": 4000, "openInterest": 500,
                            "impliedVolatility": 0.5, "inTheMoney": False}])
-    op = flow.scan_options({"AAA": {far: (calls, calls)}}, None, {"AAA"})
+    op = flow.scan_options({"AAA": {far: (calls, calls)}}, None, {"AAA"}, None,
+                           {"AAA": {"price": 380.0, "vol20": 0.3, "high252": 390.0, "low252": 250.0}})
     idx = pd.bdate_range("2026-06-01", periods=80)
     calm = [100 + 0.2 * (i % 2) for i in range(79)]
     fu = flow.scan_futures({s: pd.DataFrame({"close": calm + [95.0], "volume": [1000.0] * 78 + [2500.0, 400.0]}, index=idx)
@@ -98,13 +104,28 @@ def main() -> int:
                                 notes=[f"polymarket|{n}" for n in it[1]] + [f"options|{n}" for n in op[1]] +
                                       [f"futures|{n}" for n in fu[1]], errors=["Polymarket: x"])
     os.environ["STOCKDESK_ROLE"] = "local"
+    from stockdesk.adapters import congress as cg_src            # disclosed trades: a rated member and a watched stock
+    from test_congress import trade
+    days = market.daily["AAA"].index
+    day = lambda k: days[k].date().isoformat()
+    seed = [trade("Sharp Trader", "AAA", "buy", day(300 + 10 * k), doc=f"old{k}") for k in range(12)]
+    seed += [trade("Sharp Trader", "BBB", "sell", day(-12), day(-1), doc="new1", partial=True, owner="spouse"),
+             trade("Other Member", "AAA", "buy", day(-20), day(-1), doc="new2", asset_type="OP", hi=0.0, lo=1000000.0)]
+    for t in seed:
+        row = cg_src.CongressTrade(**t)
+        store.save_congress_doc(cg_src.Filing("house", row.doc_id, row.member, row.state, row.filed, 2026, row.url), "ok", [row])
+    store.set_meta("congress:at", 1e12)
+    store.set_meta("congress:parser", cg_src.PARSER)
+    cfg.set("congress.years_back", 4)
     eng.refresh(force=True)
+    eng.scan_congress()
     snap = eng.refresh(force=True)
     pal = T.Palette("red")
     texts = {"sources": render.sources_html(snap), "alerts": render.alerts_html(snap.alerts, snap),
              "briefing": render.briefing_html(snap.briefing, pal, snap.refs, snap.plans, snap.bottoms),
              "research": render.research_html(snap.news, snap.odds), "flow": render.flow_html(snap.flow, pal),
              "flow_off": render.flow_html(None, pal), "private": render.private_html("x"),
+             "congress": render.congress_html(snap.congress, pal, {"AAA", "BBB"}), "congress_off": render.congress_html(None, pal),
              "disclaimer": render.disclaimer_html(), "digest": "\n".join(headless.digest(snap)),
              "mails": "\n".join(s + "\n" + b for s, b in mails),
              "alert_text": "\n".join(a.title + "\n" + a.body for a in snap.alerts),
@@ -125,7 +146,7 @@ def main() -> int:
     texts["pretrade_sell"] = render.pretrade_html(checks, "AAA", "SELL", 5, used)
 
     kinds = {a.kind for a in snap.alerts}
-    need = {"bottoming", "plan_level", "flow"}
+    need = {"bottoming", "plan_level", "flow", "index_level", "congress"}
     problems = [f"missing alert kinds: {sorted(need - kinds)}"] if need - kinds else []
     if not mails:
         problems.append("no mail was produced")

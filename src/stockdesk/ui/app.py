@@ -116,6 +116,9 @@ class Worker(QObject):
             if self.engine.flow_due():
                 self.engine.scan_flow()
                 self.snapshot.emit(self.engine.build_snapshot())
+            if self.engine.congress_due():
+                self.engine.scan_congress()
+                self.snapshot.emit(self.engine.build_snapshot())
             before = (getattr(self, "_remote", None) or {}).get("status")
             self._remote = remote.keep_in_sync(self.engine.cfg.get("remote", {}), getattr(self, "_remote", None))
             status = (self._remote or {}).get("status")
@@ -699,7 +702,7 @@ class App(QObject):
             if fresh and self.shots_dir is None:
                 title = fresh[0].title if len(fresh) == 1 else L(f"{len(fresh)} 条新提醒", f"{len(fresh)} new alerts")
                 body = fresh[0].body.split("\n")[0][:160] if len(fresh) == 1 else L("；", "; ").join(a.title for a in fresh[:4])
-                private = T.PRIVATE and any(a.kind not in ("bottoming", "flow") for a in fresh)
+                private = T.PRIVATE and any(a.kind not in ("bottoming", "flow", "index_level", "congress") for a in fresh)
                 self._toast = Toast(title, L("隐私模式：内容已隐藏，点击查看。", "Privacy mode: content hidden, click to view.") if private else body)
                 self._toast.clicked.connect(lambda k=fresh[0].kind: self.open_hub("flow" if k == "flow" and len(fresh) == 1 else "alerts"))
                 self._toast.popup(self.widget.screen())
@@ -834,7 +837,7 @@ class App(QObject):
             steps.append(lambda: self.open_detail(sym))
             steps.append(lambda: self.details[sym].grab().save(str(out / "detail.png")))
             steps.append(lambda: self.details[sym].close())
-        for tab in ("briefing", "portfolio", "alerts", "research", "flow", "sources"):
+        for tab in ("briefing", "portfolio", "alerts", "research", "flow", "congress", "sources"):
             steps.append(lambda tab=tab: self.open_hub(tab))
             steps.append(lambda tab=tab: self.hub.grab().save(str(out / f"hub_{tab}.png")))
         if sym:

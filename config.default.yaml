@@ -29,6 +29,18 @@ alerts:
     min_score: 5
     min_volume_score: 2         # 放量见底 / 放量上涨确认 / 涨时量大于跌时量，三项里至少成立几项
     min_drawdown_pct: 20.0      # 距 52 周高点至少跌这么多才谈得上“筑底”
+  index_levels:                 # 大盘关键位破位提醒（quant/keylevels.py）：指数跌破均线 / N 日低点 / 回撤线 / 支撑区 / 你设的价位
+    enabled: true
+    symbols: []                 # 留空 = 标普 500（^GSPC）和纳斯达克综合指数（^IXIC）；可改成 ["^GSPC", "^NDX", "^SOX"] 等 Yahoo 代码
+    ma: [50, 100, 200]          # 哪些均线算关键位
+    lows: [20, 60]              # N 日收盘新低
+    drawdowns: [10, 20]         # 距 52 周收盘高点回落达到这些百分比（10% = 回调，20% = 熊市）
+    min_hold: 10                # 此前至少多少个交易日站在另一侧，才算一次“破位”（避免在均线附近来回时反复提醒）
+    zones: true                 # 一年内波段高低点聚成的支撑区
+    levels: {}                  # 你自己盯的价位，例如 {"^GSPC": [7000, 6800], "^IXIC": [23000]}
+    up: true                    # 也记录向上收复 / 创 52 周新高（只在提醒页显示，不弹窗、不发邮件）
+    lookback_days: 5            # 提醒正文里列出最近几个交易日发生、至今没有收复的破位
+    email_min_severity: warn    # 发邮件的最低级别：warn = 盘中跌破重要关键位就发；high = 只发收盘确认的
 
 notify:
   email:                        # 邮件提醒，默认关闭；授权码只存 Windows 凭据管理器，不写在这里
@@ -40,7 +52,7 @@ notify:
     smtp_host: ""               # 例如 smtp.gmail.com / smtp.qq.com / smtp.163.com
     smtp_port: 587              # 587 = STARTTLS，465 = SSL
     username: ""
-    kinds: [bottoming, plan_level, flow]   # 哪些提醒发邮件：筑底信号、到达你在计划里写的价位、异动扫描（只发高级别）
+    kinds: [bottoming, plan_level, flow, index_level, congress]   # 哪些提醒发邮件：筑底信号、到达你在计划里写的价位、异动扫描（只发高级别）、大盘关键位破位、议员交易
 
 briefing:                       # 每日简报（分析中心第一页）
   cooloff_days: 5               # 卖出后多少个交易日内算“冷静期”
@@ -188,6 +200,25 @@ remote:
   host: ""                      # 例如 user@server
   dir: stock-desk               # 对方主目录下的文件夹
   auto_sync: true
+
+# 议员交易：两院议员按《股票法案》公开申报的股票买卖（规则见 src/stockdesk/congress.py 顶部）。目前读取众议院书记官网站的官方申报。
+congress:
+  enabled: true
+  scan_minutes: 60              # 每隔多少分钟看一次有没有新申报
+  years_back: 2                 # 读取最近几年的申报，用来给议员评级（第一次要逐份下载，约一两个小时读完）
+  docs_per_scan: 25             # 每轮最多下载几份申报
+  horizon_days: 63              # 评估周期：交易日之后多少个交易日，相对标普看方向对不对
+  short_days: 21
+  min_calls: 10                 # “★ 准”至少要有多少笔可评估的交易（且 95% 区间整体高于 50%）
+  watch_calls: 5                # “偏准”至少多少笔（且六成以上方向正确）
+  alert_days: 7                 # 只提醒最近几天披露的申报
+  consensus_days: 90            # 统计“其他议员在同一只股票上”的时间窗
+  email_min_severity: warn      # warn = 评级偏准以上的议员有新申报，或有人买卖你的自选；high = 两者同时满足
+  max_emails_per_day: 6
+  senate:                       # 参议院的申报在 efdsearch.senate.gov，查询前必须先同意该站点首页的使用协议
+    enabled: false
+    agree_terms: false          # 请先自己打开 https://efdsearch.senate.gov/search/home/ 读完协议（5 U.S.C. app. 105(c)：不得用于非法目的、
+                                # 商业目的（新闻媒体除外）、评定信用或募款），同意后把上面两项都改成 true；程序才会替你勾选并查询
 
 # 异动扫描：Polymarket 大额下注、期权放量、期货大幅波动（只读公开数据；规则见 src/stockdesk/flow.py 顶部）
 flow:

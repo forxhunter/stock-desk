@@ -62,6 +62,7 @@ def env(tmp_path, monkeypatch):
     cfg = Config.load(ROOT / "config.default.yaml", tmp_path / "data" / "config.yaml")
     cfg.set("research.semianalysis.enabled", False)
     cfg.set("research.polymarket.enabled", False)
+    cfg.set("congress.enabled", False)            # no network in tests; tests/test_congress.py feeds it fixtures
     market = FakeMarket(["AAA", "BBB", "CCC", "SPY"])
     store = Store(tmp_path / "data" / "t.sqlite")
     eng = Engine(cfg, store, Watchlist(wl_path, tmp_path / "none.yaml"), market)
@@ -433,7 +434,7 @@ def test_notify_send_uses_only_the_configured_account(monkeypatch):
                             ("send", "me@example.com", "bot@example.com", "标题")]
     with pytest.raises(notify.NotifyError):
         notify.send(notify.settings({"enabled": True}), "x", "y", smtp_factory=FakeSMTP, secret="z")
-    assert notify.settings({})["enabled"] is False and notify.settings({})["kinds"] == ["bottoming", "plan_level", "flow"]
+    assert notify.settings({})["enabled"] is False and notify.settings({})["kinds"] == ["bottoming", "plan_level", "flow", "index_level", "congress"]
 
 
 def test_build_plan_levels_raise_alerts(env, monkeypatch, tmp_path):

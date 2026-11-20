@@ -13,6 +13,7 @@ from ..i18n import L
 from .base import AdapterError, AdapterUnavailable, MarketDataAdapter, RateLimited
 
 log = logging.getLogger(__name__)
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)      # it logs every delisted ticker as an error; a missing series is handled here
 _COLS = ["open", "high", "low", "close", "volume"]
 
 

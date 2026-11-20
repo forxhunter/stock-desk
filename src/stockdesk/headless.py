@@ -16,13 +16,13 @@ import sys
 import time
 from datetime import datetime
 
-from . import flow, notify, paths
+from . import congress, flow, insight, notify, paths
 from .i18n import L
 from .briefing import RANGE_TEXT
 from .engine import Engine, Snapshot
 
 log = logging.getLogger("stockdesk.headless")
-MAIL_KINDS = ("bottoming", "plan_level", "flow")
+MAIL_KINDS = ("bottoming", "plan_level", "flow", "index_level", "congress")
 
 
 def _px(x: float) -> str:
@@ -33,6 +33,12 @@ def digest(snap: Snapshot, now: float | None = None) -> tuple[str, str]:
     """Plain-text daily summary: signals and levels only, no holdings, amounts or P&L."""
     day = datetime.fromtimestamp(now or time.time())
     out = [L(f"Stock Desk 每日信号汇总 · {day:%Y-%m-%d %H:%M}", f"Stock Desk daily signal digest · {day:%Y-%m-%d %H:%M}"), ""]
+
+    market = insight.digest_lines(snap.indices, snap.vix)
+    if market:
+        out += [L("【大盘关键位】（指数相对均线、支撑区等固定规则价位的位置）",
+                  "[Market key levels] (where the indices stand against averages, support zones and other rule-based levels)")]
+        out += market + [""]
 
     out.append(L("【量化信号】", "[Quant signals]"))
     for v in snap.tickers:
@@ -95,6 +101,11 @@ def digest(snap: Snapshot, now: float | None = None) -> tuple[str, str]:
             if k == "futures":
                 out.append(f"  · {text}")
 
+    cg = congress.digest_lines(snap.congress)
+    if cg:
+        out += ["", L("【议员交易】（近两天披露；只列评级偏准以上的议员，或涉及你自选的）",
+                      "[Congress trades] (disclosed in the last two days; only members rated fairly accurate or better, or trades in your watchlist)")] + cg
+
     today = [a for a in snap.alerts if a.kind in MAIL_KINDS and not a.demo and a.created >= (now or time.time()) - 86400]
     if today:
         out += ["", L("【近 24 小时的提醒】", "[Alerts in the last 24 hours]")] + [f"  · {a.title}" for a in today[:12]]
@@ -126,6 +137,12 @@ def tick(engine: Engine | None = None, now: float | None = None) -> Snapshot:
         e.refresh_research()
     if e.flow_due():
         e.scan_flow()
+    if e.congress_due():
+        rep = e.scan_congress()
+        for _ in range(3):                    # no window to keep responsive here: read a backlog faster
+            if not rep.backlog:
+                break
+            rep = e.scan_congress(force=True)
     snap = e.build_snapshot()                 # raises alerts and mails the new ones
     if e.mail_role_ok() and digest_due(e.cfg, e.store, now):
         try:

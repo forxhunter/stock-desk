@@ -47,7 +47,10 @@ English and Chinese interface · [中文说明](README.zh-CN.md)
 
 **Alerts when you are away**
 
-- E-mail alerts for bottoming signals, plan levels and strong scan hits, plus a daily signal digest. Mails contain signals only: no holdings, amounts or P&L.
+- **Index key-level breaks**: an alert when the S&P 500 or the Nasdaq closes below (or trades below, intraday) a 50 / 100 / 200-day average, a 20 / 60-day closing low, the 10 % / 20 % drawdown line, a support zone or a level you set. Intraday first, once more when the close confirms it.
+- **Congress trades**: reads the official Periodic Transaction Reports of the House of Representatives and, once you have accepted that site's terms yourself (`congress.senate.agree_terms`), of the Senate; judges every disclosed purchase and sale by what the stock did against the S&P 500 afterwards (a purchase is right if it beat the market, a sale if it lagged it), rates each member on that record with a Wilson interval and a minimum sample, and alerts you when a member with an accurate record files again or when anyone trades a stock on your watchlist. Each alert also shows the result of following only after the disclosure, which is all a reader could have had. Scanned paper filings (about one in eight) cannot be read and are only counted.
+- **Alerts are write-ups, not one-liners.** Each one says what happened with the numbers, where the price stands now, the next key levels, what followed the same event in the index's own history (forward returns against an ordinary day, how often the level was regained within five sessions, the worst cases), what it means for each stock on your watchlist (beta, own averages, nearest support) and what to check next. Still signals, never advice.
+- E-mail alerts for index breaks, bottoming signals, plan levels and strong scan hits, plus a daily signal digest. Mails contain signals only: no holdings, amounts or P&L.
 - Optional headless runner for an always-on Linux box (cron). The desktop keeps it in sync and verifies it file by file, so alerts keep coming while the PC sleeps.
 
 ## Quick start
@@ -107,7 +110,7 @@ The first command installs the headless runner and a 10-minute cron job. The sec
 
 ## Configuration
 
-Every threshold is documented in [`config.default.yaml`](config.default.yaml). Override any of them in `data/config.yaml`. The rules of the scan are at the top of [`src/stockdesk/flow.py`](src/stockdesk/flow.py), and those of the bottoming check at the top of [`src/stockdesk/quant/bottom.py`](src/stockdesk/quant/bottom.py).
+Every threshold is documented in [`config.default.yaml`](config.default.yaml). Override any of them in `data/config.yaml`. The rules of the scan are at the top of [`src/stockdesk/flow.py`](src/stockdesk/flow.py), those of the bottoming check at the top of [`src/stockdesk/quant/bottom.py`](src/stockdesk/quant/bottom.py), and those of the index key levels at the top of [`src/stockdesk/quant/keylevels.py`](src/stockdesk/quant/keylevels.py) (settings under `alerts.index_levels`; add `^NDX` or `^SOX` there if you want them). The rating of members of Congress is described at the top of [`src/stockdesk/congress.py`](src/stockdesk/congress.py) (settings under `congress`). Those reports may not be used for commercial purposes, credit ratings or soliciting money (5 U.S.C. app. 105(c)).
 
 ## Built with
 

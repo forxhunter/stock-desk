@@ -6,11 +6,13 @@ import math
 import os
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from typing import Callable
 
 import pandas as pd
 
-from . import briefing, credentials, flow, notify, paths, plans
+from . import briefing, congress, credentials, flow, insight, notify, paths, plans
+from .adapters import congress as congress_src
 from .adapters.base import AdapterError, AdapterUnavailable, BrokerAdapter, RateLimited
 from .adapters.ibkr_cp import IbkrClientPortalAdapter
 from .adapters.ibkr_flex import IbkrFlexAdapter
@@ -25,7 +27,7 @@ from .behavior.demo import make_demo_trades
 from .config import Config
 from .i18n import L
 from .models import Alert, BrokerData, MarketOdds, NewsItem, Position, Trade
-from .quant import optimizer
+from .quant import keylevels, optimizer
 from .quant.analysis import Analysis, analyze
 from .quant.bottom import LABELS as bottom_labels
 from .quant.bottom import BottomState, bottom_state
@@ -101,6 +103,9 @@ class Snapshot:
     plans: list[plans.PlanStatus] = field(default_factory=list)   # the user's own written plans
     bottoms: dict[str, BottomState] = field(default_factory=dict)  # symbol -> bottoming check
     flow: flow.FlowReport | None = None                           # unusual-activity scan
+    indices: dict[str, keylevels.IndexState] = field(default_factory=dict)   # market indices and their key levels
+    vix: dict | None = None                                       # {price, chg, pct}
+    congress: congress.CongressReport | None = None               # trades disclosed by members of Congress
 
     def get(self, symbol: str) -> TickerView | None:
         return next((t for t in self.tickers if t.symbol == symbol), None)
@@ -129,6 +134,16 @@ class Engine:
         self._odds: list[MarketOdds] = [MarketOdds(**d) for d in self.store.get_meta("polymarket:odds", []) or []]
         self._flow = flow.FlowReport.from_dict(self.store.get_meta("flow:report", None))
         self._flow_parts: dict[str, tuple[list, list]] = {}
+        self._long: dict[str, pd.DataFrame] = {}          # decades of daily bars for the indices
+        self._opt_spot: dict[str, float] = {}             # stock price that came with the option chain
+        self._long_try = 0.0
+        self._idx_bars: dict[str, pd.DataFrame] = {}
+        self._idx_past: dict[tuple, keylevels.IndexState | None] = {}
+        self._building: Snapshot | None = None
+        self._cg: congress.CongressReport | None = None
+        self._cg_bars: dict[str, pd.DataFrame] = {}       # price history of the stocks members traded
+        self._cg_missing: set[str] = set()                # tickers already looked up in the local cache
+        self._senate_send = None                          # tests replace the Senate site with a function
         self.snapshot = Snapshot()
 
     # ------------------------------------------------------------------ brokers
@@ -162,7 +177,7 @@ class Engine:
         adapters = self._adapters()
         active = {a.name for a in adapters}
         for name in list(self._status):
-            if name not in active and name not in ("yahoo", "semianalysis", "polymarket", "email"):
+            if name not in active and name not in ("yahoo", "semianalysis", "polymarket", "email", "flow", "congress", "remote"):
                 self._status.pop(name, None)
                 self._broker.pop(name, None)
         if not force and time.time() - self._broker_at < float(self.cfg.get("sources.broker_refresh_seconds", 300)):
@@ -412,10 +427,33 @@ class Engine:
                 for exp in list(tk.options or [])[:expiries]:
                     oc = tk.option_chain(exp)
                     chain[exp] = (oc.calls, oc.puts)
+                    px = (getattr(oc, "underlying", None) or {}).get("regularMarketPrice")
+                    if px:
+                        self._opt_spot[sym] = float(px)
                 if chain:
                     out[sym] = chain
             except Exception as e:                       # no listed options, or Yahoo said no
                 log.info("option chain unavailable for %s: %s", sym, type(e).__name__)
+        return out
+
+    def _option_spot(self, symbols: list[str]) -> dict[str, dict]:
+        """What is known about each stock behind an option chain: price, realised volatility, 52-week range."""
+        out = {}
+        for sym in symbols:
+            d: dict = {}
+            bars = self._daily.get(sym)
+            if bars is not None and len(bars) >= 30:
+                c = bars["close"].astype(float)
+                rv = float(c.pct_change().tail(20).std()) * math.sqrt(252)
+                d = {"price": float(c.iloc[-1]), "vol20": rv if rv == rv else None,
+                     "high252": float(c.tail(252).max()), "low252": float(c.tail(252).min())}
+                intr = self._intraday.get(sym)
+                if intr is not None and len(intr):
+                    d["price"] = float(intr["close"].iloc[-1])
+            if self._opt_spot.get(sym):
+                d["price"] = self._opt_spot[sym]
+            if d.get("price"):
+                out[sym] = d
         return out
 
     def scan_flow(self, force: bool = False) -> flow.FlowReport:
@@ -447,7 +485,7 @@ class Engine:
             parts.pop("polymarket", None)
         if s["futures"].get("enabled", True):
             try:
-                bars = self.market.history(list(s["futures"]["symbols"]), "6mo")
+                bars = self.market.history(list(s["futures"]["symbols"]), "2y")
                 parts["futures"] = flow.scan_futures(bars, s["futures"], now)
             except Exception as e:
                 rep.errors.append(L(f"期货：{type(e).__name__}", f"Futures: {type(e).__name__}"))
@@ -464,7 +502,8 @@ class Engine:
                     syms = [x for x in self.watchlist.symbols() if x.isalpha()]
                     syms += [x for x in s["options"]["extra_symbols"] if x not in syms]
                     chains = self._option_chains(syms, int(s["options"]["expiries"]))
-                    parts["options"] = flow.scan_options(chains, s["options"], set(self.watchlist.symbols()), now)
+                    parts["options"] = flow.scan_options(chains, s["options"], set(self.watchlist.symbols()), now,
+                                                         self._option_spot(list(chains)))
                     self.store.set_meta("flow:options_at", now)
                 except Exception as e:
                     rep.errors.append(L(f"期权：{type(e).__name__}", f"Options: {type(e).__name__}"))
@@ -480,12 +519,188 @@ class Engine:
         self.store.set_meta("flow:at", now)
         return rep
 
+    # ------------------------------------------------------------------ trades disclosed by members of Congress
+    def congress_due(self) -> bool:
+        if not self.cfg.get("congress.enabled", True):
+            return False
+        if self._cg is None:                      # a new process: rebuild from the local cache first
+            return True
+        age = self.store.meta_age("congress:at")
+        wait = 120 if self.store.get_meta("congress:backlog", 0) else float(self.cfg.get("congress.scan_minutes", 60)) * 60
+        return age is None or age > wait
+
+    def _congress_fetch(self, s: dict, getter=None) -> None:
+        """Read the official index and up to ``docs_per_scan`` reports that are not in the local store yet."""
+        kw = {"getter": getter} if getter is not None else {}
+        if self.store.get_meta("congress:parser") != congress_src.PARSER:
+            self.store.clear_congress()
+            self.store.set_meta("congress:parser", congress_src.PARSER)
+        known = self.store.congress_known()
+        todo: list = []
+        for year in congress_src.years(int(s["years_back"])):
+            if year != time.localtime().tm_year and (self.store.meta_age(f"congress:index:{year}") or 1e12) < 86400:
+                todo += [congress_src.Filing(**f) for f in self.store.get_meta(f"congress:todo:{year}", []) or []
+                         if f"house:{f['doc_id']}" not in known]
+                continue
+            fil = congress_src.house_index(year, **kw)
+            new = [f for f in fil if f"house:{f.doc_id}" not in known]
+            self.store.set_meta(f"congress:index:{year}", len(fil))
+            self.store.set_meta(f"congress:todo:{year}", [vars(f) for f in new])
+            todo += new
+        senate, stopped = None, None
+        sc = dict(self.cfg.get("congress.senate", {}) or {})
+        if sc.get("enabled") and sc.get("agree_terms"):          # the user has read and accepted the site's terms
+            senate = congress_src.SenateEfd(send=self._senate_send)
+            try:
+                if (self.store.meta_age("congress:index:senate") or 1e12) < float(s["scan_minutes"]) * 60 - 60:
+                    todo += [congress_src.Filing(**f) for f in self.store.get_meta("congress:todo:senate", []) or []
+                             if f"senate:{f['doc_id']}" not in known]
+                else:
+                    first = date(min(congress_src.years(int(s["years_back"]))), 1, 1)
+                    new = [f for f in senate.filings(first) if f"senate:{f.doc_id}" not in known]
+                    self.store.set_meta("congress:index:senate", len(new))
+                    self.store.set_meta("congress:todo:senate", [vars(f) for f in new])
+                    todo += new
+            except AdapterError as e:                 # the Senate site is down or changed: the House still gets read
+                stopped, senate = AdapterError(L(f"参议院站点：{e}", f"Senate site: {e}")), None
+                todo = [f for f in todo if f.chamber != "senate"]
+        todo.sort(key=lambda f: f.filed, reverse=True)
+        done = 0
+        for f in todo[: int(s["docs_per_scan"])]:
+            try:
+                rows = senate.trades(f) if f.chamber == "senate" and senate is not None else congress_src.house_trades(f, **kw)
+                self.store.save_congress_doc(f, "scan" if rows is None else "ok", rows or [])
+            except (AdapterUnavailable, RateLimited) as e:
+                stopped = e                        # the site is not answering (or the PDF reader is missing): next cycle
+                break
+            except AdapterError:
+                self.store.save_congress_doc(f, "error", [])
+            except Exception:                      # one odd report must not stop the queue
+                log.exception("reading a disclosure failed")
+                self.store.save_congress_doc(f, "error", [])
+            done += 1
+            if s["pause_seconds"] and getter is None:
+                time.sleep(float(s["pause_seconds"]))
+        self.store.set_meta("congress:backlog", max(0, len(todo) - done))
+        if stopped is not None:
+            raise stopped
+
+    def _congress_prices(self, s: dict, tickers: list[str], fetch: bool) -> None:
+        """Price history of the traded stocks: from the local cache, refreshed in batches about once a day."""
+        for sym in tickers:
+            if sym not in self._cg_bars and sym not in self._cg_missing:
+                df = self.store.load_bars(sym, "1d_cg")
+                if df.empty:
+                    self._cg_missing.add(sym)
+                else:
+                    self._cg_bars[sym] = df
+        if time.time() < self._backoff_until:
+            return
+        seen = self.store.get_meta("congress:prices", {}) or {}
+        now = time.time()
+        ttl = float(s["price_ttl_hours"]) * 3600
+        stale = sorted((x for x in tickers if (now - float(seen.get(x, 0)) > ttl if fetch else x not in seen)),
+                       key=lambda x: float(seen.get(x, 0)))        # between scans: only stocks never looked up
+        if not stale:
+            return
+        size = int(s["price_batch"])
+        try:
+            for k in range(int(s["price_batches"])):
+                chunk = stale[k * size:(k + 1) * size]
+                if not chunk:
+                    break
+                got = self.market.history(chunk, str(s["price_period"]))
+                for sym in chunk:
+                    seen[sym] = now
+                    df = got.get(sym)
+                    if df is not None and len(df):
+                        self._cg_bars[sym] = df
+                        self._cg_missing.discard(sym)
+                        self.store.save_bars(sym, "1d_cg", df)
+        except RateLimited:
+            self._backoff_until = now + 600
+        except AdapterError as e:
+            log.warning("congress prices: %s", e)
+        self.store.set_meta("congress:prices", seen)
+
+    def scan_congress(self, force: bool = False, getter=None) -> congress.CongressReport:
+        """New disclosures, prices of the traded stocks, and every member's record (public records, read-only)."""
+        s = congress.settings(self.cfg.get("congress", {}) or {})
+        age = self.store.meta_age("congress:at")
+        wait = 120 if self.store.get_meta("congress:backlog", 0) else float(s["scan_minutes"]) * 60
+        fetch = force or age is None or age > wait
+        errors: list[str] = []
+        if fetch:
+            try:
+                self._congress_fetch(s, getter)
+            except AdapterError as e:
+                errors.append(str(e))
+            except Exception as e:
+                errors.append(L(f"内部错误 {type(e).__name__}", f"internal error {type(e).__name__}"))
+                log.exception("congress fetch failed")
+            self.store.set_meta("congress:at", time.time())
+        since = f"{min(congress_src.years(int(s['years_back'])))}-01-01"
+        trades = self.store.load_congress_trades(since)
+        kinds = set(s["asset_types"])
+        tickers = sorted({congress.ysym(t["ticker"]) for t in trades
+                          if t.get("ticker") and t.get("asset_type") in kinds and t.get("side") in ("buy", "sell")})
+        self._congress_prices(s, tickers, fetch)
+        bench = self._daily.get(self.cfg.get("app.benchmark", "SPY"))
+        rep = congress.build_report(trades, self._cg_bars, bench, s, set(self.watchlist.symbols()), now=time.time())
+        docs = self.store.congress_docs(since)
+        rep.since, rep.errors = since, errors
+        rep.docs, rep.scans = sum(1 for d in docs if d["status"] == "ok"), sum(1 for d in docs if d["status"] == "scan")
+        rep.senate = bool(self.cfg.get("congress.senate.enabled") and self.cfg.get("congress.senate.agree_terms"))
+        rep.backlog = int(self.store.get_meta("congress:backlog", 0) or 0)
+        self._cg = rep
+        if errors:
+            self._status["congress"] = ("off", L(f"议员交易：{errors[0]}（显示已缓存的内容）", f"Congress trades: {errors[0]} (showing cached content)"))
+        else:
+            more = L(f"，还有 {rep.backlog} 份在排队读取", f", {rep.backlog} more queued") if rep.backlog else ""
+            sen = sum(1 for d in docs if d["status"] == "ok" and d["chamber"] == "senate")
+            self._status["congress"] = ("ok", L(f"议员交易：正常（已读取 {rep.docs} 份申报：众议院 {rep.docs - sen}、参议院 {sen}{more}；"
+                                                f"{rep.scans} 份扫描件无法读取）",
+                                                f"Congress trades: OK ({rep.docs} reports read: House {rep.docs - sen}, Senate {sen}{more}; "
+                                                f"{rep.scans} scanned reports unreadable)"))
+        return rep
+
+    def _congress_alerts(self, snap: Snapshot) -> list[Alert]:
+        """A new report by a member with an accurate record, or one that trades a stock on the watchlist."""
+        rep = self._cg
+        if rep is None or not self.cfg.get("congress.enabled", True) or rep.backlog:
+            return []                              # ratings are only meaningful once the history has been read
+        days = int(self.cfg.get("congress.consensus_days", 90))
+        main = next(iter(snap.indices), None)
+        out = []
+        for note in rep.filings:
+            m = rep.score(f"{note.chamber}:{note.member}")
+            sev = congress.severity(note, m)
+            if sev is None:
+                continue
+            try:
+                extra = insight.flow_extra(note.watch, snap.tickers, snap.indices, snap.vix, self._idx_bars.get(main)) if note.watch else []
+                title, body = congress.alert_text(note, rep, extra, days)
+            except Exception:
+                log.exception("congress write-up failed")
+                continue
+            out.append(Alert(f"cg:{note.doc}", "congress", note.watch[0] if note.watch else "", sev, title, body,
+                             {"member": note.member, "tier": m.tier if m else "", "tickers": [c.ticker for c in note.calls][:20]}))
+        return out
+
     def _flow_alerts(self) -> list[Alert]:
         if not self.cfg.get("flow.enabled", True) or not self._flow.ts:
             return []
         out = []
+        snap = self._building
         for i in flow.alert_items(self._flow, self.cfg.get("flow", {}) or {}):
-            title, body = flow.alert_text(i)
+            extra = []
+            if snap is not None and (i.tickers or i.source in ("options", "futures")):
+                main = next(iter(snap.indices), None)
+                try:
+                    extra = insight.flow_extra(i.tickers, snap.tickers, snap.indices, snap.vix, self._idx_bars.get(main))
+                except Exception:
+                    log.exception("flow write-up failed")
+            title, body = flow.alert_text(i, extra)
             out.append(Alert(f"flow:{i.key}", "flow", i.tickers[0] if i.tickers else "", i.severity, title, body,
                              {"source": i.source, "score": i.score, "amount": i.amount}))
         return out
@@ -506,7 +721,10 @@ class Engine:
             fx |= {str(p["follow"]).upper() for p in plans.load().values() if p.get("follow")}
         except Exception:
             log.exception("reading plans failed")
-        self._load_market(sorted(set(symbols) | {bench} | fx), force)
+        idx = self._index_symbols()
+        self._load_market(sorted(set(symbols) | {bench} | fx | set(idx) | ({"^VIX"} if idx else set())), force)
+        if idx:
+            self._load_long(list(idx))
         snap = self.build_snapshot(positions)
         return snap
 
@@ -608,8 +826,15 @@ class Engine:
         snap.news = list(self._news)
         snap.odds = for_watchlist(self._odds, self.watchlist.symbols(),
                                   bool(cfg.get("research.polymarket.show_macro", True)))
-        self._extra_alerts = self._bottoming(snap) + self._plan_alerts(snap) + self._flow_alerts()
+        self._index_states(snap)
+        self._building = snap
+        try:
+            self._extra_alerts = (self._index_alerts(snap) + self._bottoming(snap) + self._plan_alerts(snap)
+                                  + self._flow_alerts() + self._congress_alerts(snap))
+        finally:
+            self._building = None
         snap.flow = self._flow if self.cfg.get("flow.enabled", True) else None
+        snap.congress = self._cg if self.cfg.get("congress.enabled", True) else None
         self._behaviour(snap, positions, prices)
         self._email(snap)
         for v in views:
@@ -681,6 +906,16 @@ class Engine:
                 if peers:
                     lines.append(L("同时盯着的其它股票 — " + "；".join(peers) + "。",
                                    "Other stocks being watched — " + "; ".join(peers) + "."))
+                v = snap.get(sym)
+                main = next(iter(snap.indices), None)
+                try:
+                    lines += insight.bottom_extra(
+                        sym, st, self._daily.get(sym), day_pct=v.day_pct if v is not None and not math.isnan(v.price) else None,
+                        analysis=v.analysis if v is not None else None, indices=snap.indices, vix=snap.vix,
+                        index_bars=self._idx_bars.get(main),
+                        usd=self._currencies({}).get(sym, v.currency if v is not None else "USD") == "USD")
+                except Exception:
+                    log.exception("bottoming write-up failed for %s", sym)
                 lines.append(L("这是按固定规则统计的形态信号，不是预测：历史上这类信号出现后既有继续上涨的，也有再创新低的。"
                                "如果收盘跌破上面这个低点，这次信号就作废。",
                                "This is a pattern signal counted by fixed rules, not a prediction: historically this kind of signal "
@@ -722,6 +957,10 @@ class Engine:
                                   ccy=v.currency, **self._follow_info(snap, sym, v, plan))
                 snap.plans.append(st)
                 for key, level, title, text in st.events:
+                    try:
+                        text = self._plan_text(snap, sym, st, key, level, text)
+                    except Exception:
+                        log.exception("plan write-up failed for %s", sym)
                     out.append(Alert(f"plan:{sym}:{key}:{level:.10g}", "plan_level", sym,
                                      "high" if key == "exit" else "warn", title,
                                      text + L("\n价位是你自己在计划里写的；程序只负责提醒，不会下单。",
@@ -729,6 +968,148 @@ class Engine:
                                      {"key": key, "level": level}))
         except Exception:
             log.exception("plans failed")
+        return out
+
+    def _plan_text(self, snap: Snapshot, sym: str, st, key: str, level: float, text: str) -> str:
+        """The analysis under a plan-level alert, for the stock whose price the levels are written in."""
+        who = st.follow or sym
+        w = snap.get(who)
+        bars = self._daily.get(who)
+        day = None
+        if w is not None and not math.isnan(w.price):
+            day = w.day_pct
+        elif bars is not None and len(bars) >= 2:
+            day = (float(bars["close"].iloc[-1]) / float(bars["close"].iloc[-2]) - 1) * 100
+        main = next(iter(snap.indices), None)
+        flows = [i for i in (self._flow.items if self._flow.ts else []) if who in i.tickers or sym in i.tickers]
+        ccy = (w.currency if w is not None else st.level_ccy) or "USD"
+        return insight.plan_body(text, st, key, level, symbol=who, bars=bars, price=st.check_price, day_pct=day,
+                                 analysis=w.analysis if w is not None else None, indices=snap.indices, vix=snap.vix,
+                                 index_bars=self._idx_bars.get(main), bottom=snap.bottoms.get(who), flows=flows,
+                                 usd=ccy == "USD")
+
+    # ------------------------------------------------------------------ market indices and their key levels
+    def _index_cfg(self) -> dict:
+        return dict(self.cfg.get("alerts.index_levels", {}) or {})
+
+    def _index_symbols(self) -> dict[str, str]:
+        """symbol -> display name of the indices whose key levels are watched."""
+        c = self._index_cfg()
+        if not c.get("enabled", True):
+            return {}
+        raw = c.get("symbols") or keylevels.SYMBOLS
+        items = raw.items() if isinstance(raw, dict) else ((s, None) for s in raw)
+        return {str(s): str(n) if n else keylevels.NAMES.get(str(s), str(s)) for s, n in items}
+
+    def _load_long(self, symbols: list[str]) -> None:
+        """Decades of daily bars for the indices, for the record of earlier breaks; refreshed once a day."""
+        for s in symbols:
+            if s not in self._long:
+                df = self.store.load_bars(s, "1d_long")
+                if not df.empty:
+                    self._long[s] = df
+        now = time.time()
+        age = self.store.meta_age("index:long_at")
+        fresh = age is not None and age < 20 * 3600
+        if (fresh and all(s in self._long for s in symbols)) or now < self._backoff_until or now - self._long_try < 600:
+            return
+        self._long_try = now
+        try:
+            for s, df in self.market.history(symbols, "max").items():
+                self._long[s] = df
+                self.store.save_bars(s, "1d_long", df)
+            self.store.set_meta("index:long_at", now)
+        except AdapterError as e:
+            log.warning("index history: %s", e)
+
+    def _merged_index_bars(self, sym: str) -> tuple[pd.DataFrame | None, bool]:
+        """(daily bars ending with the current session, is that session still open)."""
+        daily = self._daily.get(sym)
+        if daily is None or len(daily) < 130:
+            return None, False
+        intr = self._intraday.get(sym)
+        if intr is None or not len(intr):
+            return daily, False
+        live = keylevels.session_live(intr.index[-1])
+        idx = intr.index.tz_localize("UTC").tz_convert("America/New_York")
+        day = idx[-1].date()
+        today = intr[idx.date == day]
+        stamp = pd.Timestamp(day)
+        row = {"open": float(today["open"].iloc[0]), "high": float(today["high"].max()), "low": float(today["low"].min()),
+               "close": float(today["close"].iloc[-1]), "volume": float(today["volume"].sum())}
+        if stamp > daily.index[-1]:
+            daily = pd.concat([daily, pd.DataFrame([row], index=[stamp])])
+        elif stamp == daily.index[-1]:         # quotes are fetched every cycle, daily bars far less often
+            daily = daily.copy()
+            daily.loc[stamp, ["high", "low", "close", "volume"]] = [
+                max(row["high"], float(daily["high"].iloc[-1])), min(row["low"], float(daily["low"].iloc[-1])),
+                row["close"], max(row["volume"], float(daily["volume"].iloc[-1]))]
+        return daily, live
+
+    def _index_states(self, snap: Snapshot) -> None:
+        c = self._index_cfg()
+        levels = c.get("levels") or {}
+        self._idx_bars = {}
+        for sym, name in self._index_symbols().items():
+            try:
+                bars, live = self._merged_index_bars(sym)
+                if bars is None:
+                    continue
+                st = keylevels.state(sym, bars, c, name=name, live=live, user_levels=levels.get(sym) or (),
+                                     long=self._long.get(sym))
+                if st is not None:
+                    snap.indices[sym] = st
+                    self._idx_bars[sym] = bars
+            except Exception:
+                log.exception("index levels failed for %s", sym)
+        vd = self._daily.get("^VIX")
+        if snap.indices and vd is not None and len(vd) >= 2:
+            px, prev, _ = self._session_stats(self._intraday.get("^VIX"), vd)
+            if not math.isnan(px) and not math.isnan(prev) and prev:
+                snap.vix = {"price": px, "chg": px - prev, "pct": (px / prev - 1) * 100}
+
+    def _index_alerts(self, snap: Snapshot) -> list[Alert]:
+        """An alert when an index breaks a key level on its latest bar: intraday first, then once more when the
+        close confirms it. Breaks of the previous sessions that still stand are listed in the text as context."""
+        c = self._index_cfg()
+        levels = c.get("levels") or {}
+        hold = int(keylevels.params(c)["min_hold"])
+        out: list[Alert] = []
+        for sym, now in snap.indices.items():
+            bars = self._idx_bars[sym]
+            for k in range(int(c.get("lookback_days", 5)), 0, -1):
+                key = (sym, bars.index[-1 - k])
+                if key not in self._idx_past:
+                    try:
+                        self._idx_past[key] = keylevels.state(sym, bars.iloc[:-k], c, name=now.name, long=self._long.get(sym),
+                                                              user_levels=levels.get(sym) or ())
+                    except Exception:
+                        log.exception("index levels failed for %s", sym)
+                        self._idx_past[key] = None
+                past = self._idx_past[key]
+                for x in (past.broken if past is not None else []):
+                    cur = now.level(x.key)
+                    ref = cur.value if cur is not None and x.kind == "ma" else x.value
+                    if x.weight >= 2 and now.price < ref:
+                        now.recent.append((past.asof, x))
+            if len(self._idx_past) > 200:
+                self._idx_past.clear()
+            for direction, hits in (("down", now.broken), ("up", now.reclaimed)):
+                if not hits or (direction == "up" and not c.get("up", True)):
+                    continue
+                top = hits[0]
+                try:
+                    title, body = insight.index_alert(now, direction, hits, others=snap.indices, vix=snap.vix,
+                                                      views=snap.tickers, index_bars=bars, hold=hold)
+                except Exception:
+                    log.exception("index write-up failed for %s", sym)
+                    continue
+                major = top.weight >= 2
+                sev = ("info" if direction == "up" else ("warn" if major else "info") if now.live
+                       else ("high" if major else "warn"))
+                out.append(Alert(f"idx:{sym}:{direction}:{now.asof:%Y%m%d}:" + (f"live:{top.key}" if now.live else "close"),
+                                 "index_level", sym, sev, title, body,
+                                 {"levels": [x.key for x in hits], "price": now.price, "direction": direction}))
         return out
 
     def mail_role_ok(self) -> bool:
@@ -761,15 +1142,21 @@ class Engine:
         left = max(0, int(fs["max_emails_per_day"]) - int(quota.get(day, 0)))
         ranks = {"info": 0, "warn": 1, "high": 2}
         flows = [a for a in todo if a.kind == "flow" and ranks.get(a.severity, 0) >= ranks.get(fs["email_min_severity"], 2)][:left]
-        todo = [a for a in todo if a.kind != "flow"] + flows
+        idx_min = ranks.get(str(self.cfg.get("alerts.index_levels.email_min_severity", "warn")), 1)
+        cg_min = ranks.get(str(self.cfg.get("congress.email_min_severity", "warn")), 1)
+        cg_left = max(0, int(self.cfg.get("congress.max_emails_per_day", 6)) - int(quota.get(f"cg{day}", 0)))
+        cgs = [a for a in todo if a.kind == "congress" and ranks.get(a.severity, 0) >= cg_min][:cg_left]
+        todo = [a for a in todo if a.kind not in ("flow", "congress")
+                and not (a.kind == "index_level" and ranks.get(a.severity, 0) < idx_min)] + flows + cgs
         if not todo:
             self._status.setdefault("email", ("ok", L(f"邮件提醒：已开启（发往 {s['to']}）", f"E-mail alerts: on (sending to {s['to']})")))
             return
         try:
             notify.send(s, *notify.alert_mail(todo))
             self.store.set_meta("email:sent", sorted(sent | {a.id for a in todo})[-500:])
-            if flows:
-                self.store.set_meta("email:flow_quota", {day: int(quota.get(day, 0)) + len(flows)})
+            if flows or cgs:
+                self.store.set_meta("email:flow_quota", {day: int(quota.get(day, 0)) + len(flows),
+                                                         f"cg{day}": int(quota.get(f"cg{day}", 0)) + len(cgs)})
             self._status["email"] = ("ok", L(f"邮件提醒：已发送 {len(todo)} 条到 {s['to']}", f"E-mail alerts: sent {len(todo)} to {s['to']}"))
         except notify.NotifyError as e:
             self._status["email"] = ("error", L(f"邮件提醒：{e}", f"E-mail alerts: {e}"))

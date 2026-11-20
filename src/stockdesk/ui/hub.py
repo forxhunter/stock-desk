@@ -21,7 +21,7 @@ from . import render
 from . import theme as T
 from . import win11
 
-TABS = ["briefing", "portfolio", "alerts", "pretrade", "research", "flow", "sources"]
+TABS = ["briefing", "portfolio", "alerts", "pretrade", "research", "flow", "congress", "sources"]
 
 
 class NoWheel(QObject):
@@ -173,6 +173,11 @@ class HubWindow(QWidget):
         lay.addWidget(self.flow)
         self.tabs.addTab(w, L("异动扫描", "Unusual-activity scan"))
 
+        # -- trades disclosed by members of Congress
+        self.congress = _browser()
+        self.congress.anchorClicked.connect(self._open_link)
+        self.tabs.addTab(self.congress, L("议员交易", "Congress trades"))
+
         # -- sources / settings
         self.tabs.addTab(self._build_sources(), L("数据源与设置", "Sources && settings"))
 
@@ -199,6 +204,7 @@ class HubWindow(QWidget):
         self._keep_scroll(self.flow, render.flow_html(snap.flow, self.pal))
         hot = sum(1 for i in snap.flow.items if i.severity != "info") if snap.flow else 0
         self.tabs.setTabText(TABS.index("flow"), L(f"异动扫描（{hot}）", f"Unusual-activity scan ({hot})") if hot else L("异动扫描", "Unusual-activity scan"))
+        self._keep_scroll(self.congress, render.congress_html(snap.congress, self.pal, {v.symbol for v in snap.tickers}))
         self.status.setHtml(render.sources_html(snap))
         self.tabs.setTabText(TABS.index("alerts"), L(f"行为提醒（{len(snap.alerts)}）", f"Behaviour alerts ({len(snap.alerts)})") if snap.alerts else L("行为提醒", "Behaviour alerts"))
 
@@ -354,7 +360,8 @@ class HubWindow(QWidget):
 
         g = QGroupBox(L("邮件提醒（可选）", "Email alerts (optional)"))
         f = QFormLayout(g)
-        self.mail_on = QCheckBox(L("出现筑底信号、或到达我在计划里写的价位时，给我发邮件", "Email me when a bottoming signal appears or a price level from my plan is reached"))
+        self.mail_on = QCheckBox(L("出现筑底信号、到达我在计划里写的价位、标普 / 纳指跌破关键位或出现高级别异动时，给我发邮件",
+                                    "Email me on a bottoming signal, a price level from my plan, an S&&P / Nasdaq break of a key level, or high-level unusual activity"))
         self.mail_on.setChecked(bool(c.get("notify.email.enabled")))
         self.mail_to = QLineEdit(str(c.get("notify.email.to", "") or ""))
         self.mail_to.setPlaceholderText(L("收件地址", "Recipient address"))

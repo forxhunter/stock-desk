@@ -8,6 +8,7 @@ from datetime import datetime
 
 from ..engine import Snapshot, TickerView
 from ..i18n import L
+from ..insight import is_head
 from ..models import Alert, MarketOdds, NewsItem
 from ..quant import optimizer
 from ..quant.analysis import DISCLAIMER
@@ -255,6 +256,8 @@ def flow_html(rep, pal: T.Palette) -> str:
             out.append(f'<p style="margin:12px 0 2px 0;"><span style="color:{col};">{dot}</span> {link}{tier}</p>')
             out.append(f'<p style="margin:0 0 2px 16px;">{esc(i.headline)}</p>')
             out.append("".join(f'<p style="margin:0 0 1px 16px; color:{T.SUB}; font-size:9pt;">· {esc(f)}</p>' for f in i.facts))
+            out.append("".join(f'<p style="margin:1px 0 1px 16px; color:{T.TEXT}; font-size:9pt; line-height:135%;">'
+                               f'{L("具体：", "Details: ") if n == 0 else L("　　　", "")}{esc(d)}</p>' for n, d in enumerate(i.detail)))
             out.append("".join(f'<p style="margin:1px 0 1px 16px; color:{T.DIM}; font-size:9pt; line-height:135%;">'
                                f'{L("怎么看：", "How to read it: ") if n == 0 else L("　　　　", "")}{esc(r)}</p>' for n, r in enumerate(i.reading)))
         for text in notes.get(key, []):
@@ -263,6 +266,106 @@ def flow_html(rep, pal: T.Palette) -> str:
                        "大单、放量和大波动经常出现而后续什么也没发生；把它们当作“值得看一眼”的线索，而不是结论。",
                        "All thresholds can be changed in the flow section of data/config.yaml (big_usd, wallet_usd, vol_oi, z, etc.). "
                        "Large orders, volume spikes and big moves often show up with nothing following; treat them as leads worth a look, not conclusions.")))
+    return "".join(out)
+
+
+def congress_html(rep, pal: T.Palette, watch: set[str] | None = None) -> str:
+    """Trades disclosed by members of Congress: the watchlist, who has been right, the latest reports."""
+    from .. import congress as cg
+    watch = watch or set()
+    both = rep is not None and rep.senate
+    out = [_note(L("两院议员按《股票法案》公开申报的<b>股票买卖</b>（" + ("读取众议院书记官和参议院秘书处两个官方站点的申报" if both else "目前只读取众议院书记官网站的官方申报") + "）。每笔交易按“交易日之后的股价相对标普”评估方向对不对，"
+                   "并据此给议员评级。申报最晚可以在交易后 45 天才公开、金额只有区间；评级是“值得看一眼”的线索，不是预测，也不是买卖建议。",
+                   "<b>Stock trades</b> that members of Congress disclose under the STOCK Act ("
+                   + ("the official reports on the House Clerk's and the Secretary of the Senate's sites" if both else "currently only the official reports on the House Clerk's site") + "). "
+                   "Each trade is judged by the stock's move against the S&P after the trade date, and members are rated on that. "
+                   "Reports may come up to 45 days after the trade and give amount ranges only; a rating is a lead worth a look, "
+                   "not a prediction and not a buy / sell recommendation."), T.AMBER)]
+    if rep is None:
+        return "".join(out) + _note(L("议员交易追踪已关闭（data/config.yaml 里 congress.enabled）。", "Congress trade tracking is off (congress.enabled in data/config.yaml)."))
+    if not rep.ts:
+        return "".join(out) + _note(L("还没有数据，第一次读取会在启动后几分钟内开始。", "No data yet; the first read starts within a few minutes of launch."))
+    h = rep.horizon
+    queue = L(f"，还有 {rep.backlog} 份在排队读取（读完之前评级还不完整，暂不发提醒）", f"; {rep.backlog} more queued (ratings are incomplete and no alerts are sent until they are read)") if rep.backlog else ""
+    out.append(_note(L(f"上次更新 {cg.as_of(rep.ts)}　·　{rep.since} 以来已读取 {rep.docs} 份申报{queue}　·　{rep.scans} 份是扫描的纸质申报，无法自动读取"
+                       f"　·　{rep.priced}/{rep.tickers} 只股票有行情　·　评估周期：交易日后 {h} 个交易日",
+                       f"Updated {cg.as_of(rep.ts)}  ·  {rep.docs} reports read since {rep.since}{queue}  ·  {rep.scans} are scanned paper reports that cannot be read"
+                       f"  ·  {rep.priced}/{rep.tickers} stocks have price history  ·  judged {h} sessions after the trade date")
+                     + (L("　出错：", "  Errors: ") + esc(L("；", "; ").join(rep.errors)) if rep.errors else "")))
+
+    def tier(m) -> str:
+        if m is None:
+            return ""
+        col = T.AMBER if m.tier == "star" else T.BLUE if m.tier == "good" else T.RED if m.tier == "poor" else T.DIM
+        return f'<span style="color:{col}; font-size:8.5pt;"> {esc(cg.TIER[m.tier])}</span>'
+
+    def names(d: dict) -> str:
+        return L("、", ", ").join(esc(n) + tier(rep.score(next((c.who for c in rep.calls if c.member == n), ""))) for n in list(d)[:6]) or "—"
+
+    rows = []
+    for sym in sorted(watch):
+        k = rep.consensus(sym)
+        if k["buyers"] or k["sellers"]:
+            rows.append(f"<tr><td {_TD}><b>{esc(sym)}</b></td><td {_TD}>{len(k['buyers'])}{L(' 人：', ': ')}{names(k['buyers'])}</td>"
+                        f"<td {_TD}>{len(k['sellers'])}{L(' 人：', ': ')}{names(k['sellers'])}</td>"
+                        f"<td {_TD} align='right'>{k['net']:+.1f}</td></tr>")
+    out.append(_h(L("你的自选", "Your watchlist"), L("近 90 天按交易日统计 · 加权净值 = 买方评级系数之和 − 卖方之和", "by trade date over the last 90 days · weighted net = sum of buyers' weights − sellers'")))
+    if rows:
+        head = "".join(f"<th {_TH}>{x}</th>" for x in (L("股票", "Stock"), L("买入的议员", "Members buying"), L("卖出的议员", "Members selling"), L("加权净值", "Weighted net")))
+        out.append(f'<table cellspacing="0" width="100%"><tr>{head}</tr>{"".join(rows)}</table>')
+    else:
+        out.append(_note(L("近 90 天没有议员申报买卖你自选里的股票。", "No member has reported trading a stock on your watchlist in the last 90 days.")))
+
+    out.append(_h(L("谁买卖得准", "Who has been right"), L(f"按交易日后 {h} 个交易日相对标普的表现 · 买入跑赢、卖出后跑输算对", f"by the move against the S&P {h} sessions after the trade date · a purchase that beats it or a sale that lags it is right")))
+    top = [m for m in rep.members if m.tier in ("star", "good")][:20] or [m for m in rep.members if m.n][:10]
+    if top:
+        head = "".join(f"<th {_TH} align='{'left' if n < 2 else 'right'}'>{x}</th>" for n, x in enumerate(
+            (L("议员", "Member"), L("评级", "Rating"), L("可评估 / 全部", "Judged / all"), L("方向正确", "Right"), L("95% 区间", "95% interval"),
+             L("平均超额", "Avg excess"), L("买入", "Purchases"), L("卖出", "Sales"), L("披露后才跟", "Following after disclosure"), L("最近申报", "Last report"))))
+        body = []
+        for m in top:
+            ci = f"{m.ci[0] * 100:.0f}–{m.ci[1] * 100:.0f}%" if m.ci else "—"
+            fo = f"{cg.pct(m.follow[2])} ({m.follow[0]})" if m.follow[0] else "—"
+            body.append(f"<tr><td {_TD}>{esc(m.member)} <span style='color:{T.DIM}; font-size:8.5pt;'>{esc(m.state or cg.CHAMBER.get(m.chamber, ''))}</span></td>"
+                        f"<td {_TD}>{tier(m)}</td><td {_TD} align='right'>{m.n} / {m.trades}</td>"
+                        f"<td {_TD} align='right'>{m.hit_rate * 100:.0f}%</td><td {_TD} align='right'>{ci}</td>"
+                        f"<td {_TD} align='right'>{cg.pct(m.mean)}</td>"
+                        f"<td {_TD} align='right'>{cg.pct(m.buys[1])} ({m.buys[0]})</td><td {_TD} align='right'>{cg.pct(m.sells[1])} ({m.sells[0]})</td>"
+                        f"<td {_TD} align='right'>{fo}</td><td {_TD} align='right'>{esc(m.last_filed[5:])}</td></tr>")
+        out.append(f'<table cellspacing="0" width="100%"><tr>{head}</tr>{"".join(body)}</table>')
+        out.append(_note(L("“平均超额”都是带方向的：正数表示判断对了（买入后跑赢，或卖出后跑输）。括号里是笔数。“披露后才跟”是从披露后的下一个交易日算起，"
+                           "也就是读申报的人实际能拿到的结果。几百名议员里总有人因为运气上榜。",
+                           "Every 'average excess' is signed: positive means the call was right (a purchase that beat the market, or a sale that lagged it). "
+                           "Counts are in brackets. 'Following after disclosure' starts on the session after the report, which is what a reader could "
+                           "actually have had. Among several hundred members some make this list by luck.")))
+    else:
+        out.append(_note(L("还没有满足评估条件的交易。", "No trades can be judged yet.")))
+
+    out.append(_h(L("最近披露", "Latest disclosures"), L("新的在前 · 点议员名打开原始申报", "newest first · click a name to open the original report")))
+    if rep.recent:
+        head = "".join(f"<th {_TH} align='{'left' if n < 4 else 'right'}'>{x}</th>" for n, x in enumerate(
+            (L("披露日", "Filed"), L("议员", "Member"), L("操作", "Action"), L("股票", "Stock"), L("交易日", "Traded"), L("滞后", "Delay"),
+             L("金额", "Amount"), L("交易日至今", "Since the trade"), L("相对标普", "Vs S&P"))))
+        body = []
+        for c in rep.recent[:60]:
+            who = f'<a href="{esc(c.url)}" style="color:{T.TEXT}; text-decoration:none;">{esc(c.member)}</a>' if c.url else esc(c.member)
+            rel = None if c.ex_now is None else (c.ex_now if c.side == "buy" else -c.ex_now)
+            mark = "" if c.ex_now is None else (f' <span style="color:{T.GREEN};">✓</span>' if c.ex_now > 0 else f' <span style="color:{T.RED};">✗</span>')
+            tk = f"<b>{esc(c.ticker)}</b>" if c.ticker in watch else esc(c.ticker)
+            body.append(f"<tr><td {_TD}>{esc(c.filed[5:])}</td><td {_TD}>{who}{tier(rep.score(c.who))}</td>"
+                        f"<td {_TD}>{esc(cg.side_text(c))}</td><td {_TD}>{tk}</td><td {_TD} align='right'>{esc(c.traded[5:])}</td>"
+                        f"<td {_TD} align='right'>{c.delay}{L(' 天', 'd')}</td><td {_TD} align='right'>{esc(cg.money(c.lo, c.hi))}</td>"
+                        f"<td {_TD} align='right'>{_span(cg.pct(c.ret_now), pal.sign(c.ret_now or 0))}</td>"
+                        f"<td {_TD} align='right'>{cg.pct(rel)}{mark}</td></tr>")
+        out.append(f'<table cellspacing="0" width="100%"><tr>{head}</tr>{"".join(body)}</table>')
+        out.append(_note(L("✓ / ✗：到目前为止这笔的方向是对是错（买入后跑赢标普、或卖出后跑输标普为对）。粗体是你自选里的股票。",
+                           "✓ / ✗: whether the call is right so far (a purchase beating the S&P, or a sale lagging it). Bold marks stocks on your watchlist.")))
+    else:
+        out.append(_note(L("还没有读到申报。", "No reports read yet.")))
+    out.append(_note(L("数据来自众议院书记官和参议院秘书处公开的申报文件（参议院需要你在配置里确认过该站点的使用协议才会读取）。按法律（5 U.S.C. app. 105(c)），这些申报不得用于商业目的（新闻媒体除外）、评定信用或募款。"
+                       "参数在 data/config.yaml 的 congress 一节。",
+                       "Data comes from the reports published by the Clerk of the House and the Secretary of the Senate (the Senate's are read only once you have confirmed that site's terms in the settings). By law (5 U.S.C. app. 105(c)) these reports may not be used "
+                       "for commercial purposes (other than by news media), for credit ratings or to solicit money. Settings are under congress in data/config.yaml.")))
     return "".join(out)
 
 
@@ -638,7 +741,7 @@ def alerts_html(alerts: list[Alert], snap: Snapshot | None, snooze_days: float =
     for a in alerts:
         col, sev = _SEV.get(a.severity, _SEV["info"])
         when = datetime.fromtimestamp(a.created).strftime("%m-%d %H:%M") if a.created else ""
-        body = "<br>".join(esc(x) for x in a.body.split("\n"))
+        body = "<br>".join(f'<b style="color:{T.SUB};">{esc(x)}</b>' if is_head(x) else esc(x) for x in a.body.split("\n"))
         out.append(
             f'<table cellspacing="0" cellpadding="0" width="100%" style="margin:10px 0;"><tr>'
             f'<td width="4" bgcolor="{col}"></td>'

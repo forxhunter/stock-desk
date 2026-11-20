@@ -11,8 +11,8 @@ at least ``min_usd`` during the last ``recent_minutes``:
   wallet    one wallet has put ``wallet_usd`` net on one side within ``window_hours``
   onesided  three or more large trades, at least 80 % of the money on the same side
   jump      the price moved ``jump_pts`` points within the hour
-Trades at a price of 95 %+ (or 5 %-) are counted separately: buying a near-certain outcome is
-usually yield collection and carries little information.
+Trades at a price of 95 %+ (and sales at 5 %-) are counted separately: buying a near-certain outcome
+is usually yield collection, selling one is cashing in, and neither carries much information.
 
 Options (Yahoo chains, delayed): contracts whose volume today is at least ``vol_oi`` x the open
 interest, with at least ``min_volume`` contracts and ``min_premium`` dollars of premium traded.
@@ -87,6 +87,7 @@ class FlowItem:
     reading: list[str] = field(default_factory=list)    # how to read it / what to check
     amount: float = 0.0
     ts: float = 0.0
+    detail: list[str] = field(default_factory=list)     # the concrete picture: trades, prices, pay-offs, levels
 
 
 @dataclass
@@ -233,9 +234,9 @@ def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str
             buy = str(t.get("side")).upper() == "BUY"
             return (1 if first == buy else -1) * _f(t.get("size")) * _f(t.get("price"))
 
-        def low_info(t):        # buying a near-certain outcome (or dumping a near-worthless one)
+        def low_info(t):        # buying or cashing in a near-certain outcome, or dumping a near-worthless one
             px, buy = _f(t.get("price")), str(t.get("side")).upper() == "BUY"
-            return (buy and px >= ext) or (not buy and px <= 1 - ext)
+            return px >= ext or (not buy and px <= 1 - ext)
 
         info = [t for t in recent if not low_info(t)]
         dull = [t for t in recent if low_info(t)]
@@ -334,11 +335,84 @@ def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str
                              f"Also at prices of {ext * 100:.0f}% or more: {len(dull)} more large trade(s), "
                              f"{usd(sum(abs(signed(t)) for t in dull))}; mostly yield collection into expiry, "
                              "not counted in the assessment above."))
+        detail: list[str] = []
+        book = []
+        odds = " / ".join(L(f"「{o}」{x * 100:.1f}%", f"\"{o}\" {x * 100:.1f}%") for o, x in zip(outcomes, prices) if 0 <= x <= 1)
+        if odds:
+            book.append(L(f"现在的价格 {odds}", f"prices now {odds}"))
+        moves = [L(f"{zh} {_f(mk.get(k)) * 100:+.1f}", f"{en} {_f(mk.get(k)) * 100:+.1f}")
+                 for k, zh, en in (("oneHourPriceChange", "1 小时", "1h"), ("oneDayPriceChange", "1 天", "1d"),
+                                   ("oneWeekPriceChange", "1 周", "1w")) if mk.get(k) is not None]
+        if moves:
+            book.append(L(f"「{outcomes[0]}」的变动（百分点）：{'，'.join(moves)}", f"change in \"{outcomes[0]}\" (points): {', '.join(moves)}"))
+        total, depth = _f(mk.get("volumeNum", mk.get("volume"))), _f(mk.get("liquidityNum", mk.get("liquidity")))
+        money = [L(f"24 小时成交 {usd(vol24)}", f"24h volume {usd(vol24)}")] if vol24 else []
+        if total:
+            money.append(L(f"累计成交 {usd(total)}", f"total volume {usd(total)}"))
+        if depth:
+            money.append(L(f"挂单深度 {usd(depth)}", f"order-book depth {usd(depth)}"))
+        if money:
+            book.append(L("，", ", ").join(money))
+        end = str(mk.get("endDateIso") or (mk.get("endDate") or "")[:10] or (ev.get("endDate") or "")[:10])
+        try:
+            left = (datetime.strptime(end, "%Y-%m-%d").date() - datetime.fromtimestamp(now).date()).days
+            book.append(L(f"{end} 到期（还有 {left} 天）", f"resolves {end} ({left} days left)"))
+        except ValueError:
+            pass
+        if book:
+            detail.append(L("市场：", "The market: ") + L("；", "; ").join(book))
+        if info:
+            rows_txt = []
+            for t in sorted(info, key=lambda t: -_f(t.get("timestamp")))[:5]:
+                buy = str(t.get("side")).upper() == "BUY"
+                rows_txt.append(L(f"{datetime.fromtimestamp(_f(t.get('timestamp'))):%H:%M} {_wallet(t)} {'买入' if buy else '卖出'}"
+                                  f"「{t.get('outcome')}」{usd(abs(signed(t)))} @ {_f(t.get('price')) * 100:.1f}%",
+                                  f"{datetime.fromtimestamp(_f(t.get('timestamp'))):%H:%M} {_wallet(t)} {'bought' if buy else 'sold'} "
+                                  f"\"{t.get('outcome')}\" {usd(abs(signed(t)))} @ {_f(t.get('price')) * 100:.1f}%"))
+            detail.append(L(f"近 {int(p['recent_minutes'])} 分钟的大单（新的在前）：", f"Large trades in the last {int(p['recent_minutes'])} minutes (newest first): ")
+                          + L("；", "; ").join(rows_txt))
+            pos, neg = sum(signed(t) for t in info if signed(t) > 0), -sum(signed(t) for t in info if signed(t) < 0)
+            if len(outcomes) > 1:
+                detail.append(L(f"资金方向：押「{outcomes[0]}」{usd(pos)}，押「{outcomes[1]}」{usd(neg)}（买入一方或卖出另一方都算押这一方）",
+                                f"Direction of the money: towards \"{outcomes[0]}\" {usd(pos)}, towards \"{outcomes[1]}\" {usd(neg)} "
+                                "(buying one side or selling the other both count towards that side)"))
+        if top is not None:
+            amt, px0 = abs(signed(top)), _f(top.get("price"))
+            if str(top.get("side")).upper() == "BUY" and 0 < px0 < 1:
+                pay = _f(top.get("size"))
+                detail.append(L(f"最大一笔的赔率：{usd(amt)} 买在 {px0 * 100:.1f}%，「{top.get('outcome')}」兑现可收回 {usd(pay)}"
+                                f"（净赚 {usd(pay - amt)}，{(pay - amt) / amt:.1f} 倍），不兑现则 {usd(amt)} 归零。"
+                                f"愿意在这个价位买，等于认为实际概率高于 {px0 * 100:.0f}%。",
+                                f"Pay-off of the largest trade: {usd(amt)} bought at {px0 * 100:.1f}%; if \"{top.get('outcome')}\" comes true it "
+                                f"returns {usd(pay)} (a gain of {usd(pay - amt)}, {(pay - amt) / amt:.1f}x), otherwise the {usd(amt)} is lost. "
+                                f"Buying at this price means judging the real probability to be above {px0 * 100:.0f}%."))
+            else:
+                detail.append(L(f"最大一笔是卖出（{usd(amt)}，{px0 * 100:.1f}%）：可能是获利了结、止损，或在押相反的结果，单看成交记录分不清。",
+                                f"The largest trade is a sale ({usd(amt)} at {px0 * 100:.1f}%): it may be profit-taking, a stop, or a bet on "
+                                "the opposite outcome; the trade record alone cannot tell."))
+            k = int(_f(top.get("outcome_index")))
+            if k < len(prices) and 0 <= prices[k] <= 1 and px0:
+                d = (prices[k] - px0) * 100
+                after = (L("成交之后价格基本没动", "the price has hardly moved since") if abs(d) < 1
+                         else L("成交之后价格继续同方向走", "the price kept moving the same way afterwards")
+                         if (d > 0) == (str(top.get("side")).upper() == "BUY")
+                         else L("成交之后价格反向走了，这笔目前是浮亏", "the price went the other way afterwards; the trade is under water for now"))
+                detail.append(L(f"成交后的价格：成交价 {px0 * 100:.1f}% → 现在 {prices[k] * 100:.1f}%（{d:+.1f} 个百分点），{after}。",
+                                f"Price since the trade: {px0 * 100:.1f}% → now {prices[k] * 100:.1f}% ({d:+.1f} points); {after}."))
+            if vol24:
+                detail.append(L(f"这一笔相当于该市场 24 小时成交的 {amt / vol24 * 100:.0f}%。",
+                                f"This one trade equals {amt / vol24 * 100:.0f}% of the market's 24-hour volume."))
+        big_wallets = sorted(wallets.items(), key=lambda x: -abs(x[1]))[:3]
+        if len(wallets) > 1 and big_wallets and len(outcomes) > 1:
+            names_by = {str(t.get("proxy_wallet")): _wallet(t) for t in rows}
+            detail.append(L(f"{int(p['window_hours'])} 小时内净下注最多的钱包：", f"Wallets with the largest net bets in {int(p['window_hours'])} hours: ")
+                          + L("；", "; ").join(L(f"{names_by.get(w, w)} 净押「{outcomes[0 if v > 0 else 1]}」{usd(v)}",
+                                                  f"{names_by.get(w, w)} net \"{outcomes[0 if v > 0 else 1]}\" {usd(v)}") for w, v in big_wallets))
         day = datetime.fromtimestamp(now).strftime("%Y%m%d")
         items.append(FlowItem(
             "polymarket", f"pm:{cid[:14]}:{'a' if net >= 0 else 'b'}:{day}", title,
             f"https://polymarket.com/event/{slug}", round(score, 2), _severity(score), tier, tickers, headline,
-            facts, reading, gross, max(_f(t.get("timestamp")) for t in recent)))
+            facts, reading, gross, max(_f(t.get("timestamp")) for t in recent), detail))
     items.sort(key=lambda i: (-{"watch": 2, "macro": 1, "other": 0}[i.tier], -i.score, -i.amount))
     notes = []
     if low_info_n:
@@ -355,9 +429,78 @@ def scan_polymarket(trades: list[dict], events: dict[str, dict], watch: dict[str
 
 # ---- options ------------------------------------------------------------------------------------
 
+def _option_detail(sym: str, kind: str, expiry: str, r: dict, vol: float, oi: float, last: float, prem: float, dte: int,
+                   book: dict, tot: dict, sp: dict, p: dict) -> list[str]:
+    """The concrete picture of one contract: where the strike is, what it takes to pay off, what else traded."""
+    call = kind == "C"
+    name = L("看涨", "call") if call else L("看跌", "put")
+    other = L("看跌", "put") if call else L("看涨", "call")
+    strike, iv = _f(r.get("strike")), _f(r.get("impliedVolatility"))
+    spot = _f(sp.get("price"))
+    out = []
+    if spot > 0 and strike > 0:
+        d = (strike / spot - 1) * 100
+        itm = (strike < spot) if call else (strike > spot)
+        out.append(L(f"位置：正股 {spot:,.2f}，行权价 {strike:g} {'高于' if d >= 0 else '低于'}现价 {abs(d):.1f}%（{'价内' if itm else '价外'}）；"
+                     f"{expiry} 到期，还有 {dte} 天",
+                     f"Where it sits: stock {spot:,.2f}, strike {strike:g} is {abs(d):.1f}% {'above' if d >= 0 else 'below'} the price "
+                     f"({'in' if itm else 'out of'} the money); expires {expiry}, {dte} days left"))
+        be = strike + last if call else strike - last
+        need = (be / spot - 1) * 100
+        ref = ""
+        hi, lo = _f(sp.get("high252")), _f(sp.get("low252"))
+        if call and hi and be > hi:
+            ref = L(f"，这个价位在 52 周收盘高点 {hi:,.2f} 之上", f", which is above the 52-week closing high {hi:,.2f}")
+        elif not call and lo and be < lo:
+            ref = L(f"，这个价位在 52 周收盘低点 {lo:,.2f} 之下", f", which is below the 52-week closing low {lo:,.2f}")
+        out.append(L(f"盈亏平衡：按最新价 {last:,.2f} 买入，到期要正股{'涨到' if call else '跌到'} {be:,.2f}（距现价 {need:+.1f}%）才不亏{ref}；"
+                     f"如果这些是卖出的，就反过来：到期时股价没有{'涨过' if call else '跌破'} {be:,.2f}，卖方留下权利金",
+                     f"Break-even: bought at the last price {last:,.2f}, the stock must {'rise' if call else 'fall'} to {be:,.2f} "
+                     f"({need:+.1f}% from here) by expiry not to lose{ref}; if these were sold it is the reverse: the seller keeps the "
+                     f"premium as long as the stock has not {'risen above' if call else 'fallen below'} {be:,.2f} at expiry"))
+        if iv > 0 and dte > 0:
+            m = iv * math.sqrt(dte / 365.0)
+            real = _f(sp.get("vol20"))
+            cmp_ = ""
+            if real > 0:
+                cmp_ = L(f"；近 20 日实际年化波动 {real * 100:.0f}%，隐含波动{'明显高于' if iv > real * 1.2 else '明显低于' if iv < real * 0.8 else '接近'}实际"
+                         f"{'（期权偏贵，市场在为大波动付钱）' if iv > real * 1.2 else ''}",
+                         f"; realised 20-day annualised volatility {real * 100:.0f}%, so implied is "
+                         f"{'clearly above' if iv > real * 1.2 else 'clearly below' if iv < real * 0.8 else 'close to'} realised"
+                         f"{' (options are dear: the market is paying for a big move)' if iv > real * 1.2 else ''}")
+            out.append(L(f"定价隐含的波动：隐含波动率 {iv * 100:.0f}% → 到期前一个标准差约 ±{m * 100:.1f}%（{spot * (1 - m):,.2f}–{spot * (1 + m):,.2f}）；"
+                         f"行权价在这个范围{'之内' if abs(strike / spot - 1) <= m else '之外'}{cmp_}",
+                         f"What the pricing implies: implied volatility {iv * 100:.0f}% → about ±{m * 100:.1f}% for one standard deviation "
+                         f"by expiry ({spot * (1 - m):,.2f}–{spot * (1 + m):,.2f}); the strike is "
+                         f"{'inside' if abs(strike / spot - 1) <= m else 'outside'} that range{cmp_}"))
+        out.append(L(f"规模：{vol:,.0f} 张对应 {vol * 100:,.0f} 股，名义市值约 {usd(vol * 100 * spot)}；权利金 {usd(prem)}",
+                     f"Size: {vol:,.0f} contracts cover {vol * 100:,.0f} shares, about {usd(vol * 100 * spot)} of stock; premium {usd(prem)}"))
+    else:
+        out.append(L(f"{expiry} 到期，还有 {dte} 天；{vol:,.0f} 张对应 {vol * 100:,.0f} 股，权利金 {usd(prem)}",
+                     f"Expires {expiry}, {dte} days left; {vol:,.0f} contracts cover {vol * 100:,.0f} shares, premium {usd(prem)}"))
+    same = sorted(((k, v) for k, v in book.get((expiry, kind), {}).items() if k != strike and v >= max(0.5 * vol, float(p["min_volume"]))),
+                  key=lambda x: -x[1])[:2]
+    opp = book.get((expiry, "P" if call else "C"), {}).get(strike, 0.0)
+    legs = [L(f"同到期日的 {k:g} {name}也成交 {v:,.0f} 张", f"the {k:g} {name} of the same expiry also traded {v:,.0f}") for k, v in same]
+    if opp >= max(0.5 * vol, float(p["min_volume"])):
+        legs.append(L(f"同行权价的{other}成交 {opp:,.0f} 张", f"the {other} at the same strike traded {opp:,.0f}"))
+    out.append(L("可能的组合：" + "；".join(legs) + " → 更像价差 / 跨式这类组合的一条腿，而不是单纯押方向",
+                 "Possible combination: " + "; ".join(legs) + " → more likely one leg of a spread / straddle than a plain directional bet")
+               if legs else
+               L("可能的组合：同到期日没有规模相当的其它行权价成交 → 更像单腿交易", "Possible combination: no other strike of the same expiry traded in comparable size → more likely a single-leg trade"))
+    if tot["C"] + tot["P"] > 0:
+        pc = tot["P"] / tot["C"] if tot["C"] else float("inf")
+        out.append(L(f"{sym} 整体：这几个到期日看涨 {tot['C']:,.0f} 张 / 看跌 {tot['P']:,.0f} 张，看跌看涨比 {pc:.2f}"
+                     f"（{'看跌成交明显更多' if pc > 1.2 else '看涨成交明显更多' if pc < 0.7 else '两边大体均衡'}）",
+                     f"{sym} overall: calls {tot['C']:,.0f} / puts {tot['P']:,.0f} contracts over these expiries, put/call ratio {pc:.2f} "
+                     f"({'clearly more put volume' if pc > 1.2 else 'clearly more call volume' if pc < 0.7 else 'roughly balanced'})"))
+    return out
+
+
 def scan_options(chains: dict[str, dict[str, tuple]], cfg: dict | None = None, watch: set[str] | None = None,
-                 now: float | None = None) -> tuple[list[FlowItem], list[str]]:
-    """``chains``: symbol -> expiry -> (calls, puts) DataFrames in Yahoo's layout."""
+                 now: float | None = None, spot: dict[str, dict] | None = None) -> tuple[list[FlowItem], list[str]]:
+    """``chains``: symbol -> expiry -> (calls, puts) DataFrames in Yahoo's layout.
+    ``spot``: symbol -> {price, vol20, high252, low252} of the stock, when known."""
     p = settings({"options": cfg or {}})["options"]
     today = datetime.fromtimestamp(now or time.time()).date()
     day = today.strftime("%Y%m%d")
@@ -366,6 +509,7 @@ def scan_options(chains: dict[str, dict[str, tuple]], cfg: dict | None = None, w
     for sym, exps in chains.items():
         tot = {"C": 0.0, "P": 0.0}
         hits = []
+        book: dict[tuple, dict[float, float]] = {}        # (expiry, kind) -> strike -> volume
         for expiry, (calls, puts) in exps.items():
             for kind, df in (("C", calls), ("P", puts)):
                 if df is None or not len(df):
@@ -373,6 +517,7 @@ def scan_options(chains: dict[str, dict[str, tuple]], cfg: dict | None = None, w
                 for r in df.to_dict("records"):
                     vol, oi, last = _f(r.get("volume")), _f(r.get("openInterest")), _f(r.get("lastPrice"))
                     tot[kind] += vol
+                    book.setdefault((expiry, kind), {})[_f(r.get("strike"))] = vol
                     prem = vol * last * 100
                     try:
                         dte = (datetime.strptime(str(expiry)[:10], "%Y-%m-%d").date() - today).days
@@ -382,14 +527,14 @@ def scan_options(chains: dict[str, dict[str, tuple]], cfg: dict | None = None, w
                         continue
                     if vol >= float(p["min_volume"]) and vol >= float(p["vol_oi"]) * max(oi, 1.0) \
                             and prem >= float(p["min_premium"]):
-                        hits.append((prem, kind, expiry, r, vol, oi, last))
+                        hits.append((prem, kind, expiry, r, vol, oi, last, dte))
         if tot["C"] + tot["P"] > 0:
             pc = tot["P"] / tot["C"] if tot["C"] else float("inf")
             notes.append(L(f"{sym}：看涨 {tot['C']:,.0f} 张 / 看跌 {tot['P']:,.0f} 张，看跌看涨比 {pc:.2f}"
                            f"（近 {len(exps)} 个到期日）",
                            f"{sym}: calls {tot['C']:,.0f} / puts {tot['P']:,.0f} contracts, put/call ratio {pc:.2f} "
                            f"(nearest {len(exps)} expiries)"))
-        for prem, kind, expiry, r, vol, oi, last in sorted(hits, key=lambda h: -h[0])[: int(p["per_symbol"])]:
+        for prem, kind, expiry, r, vol, oi, last, dte in sorted(hits, key=lambda h: -h[0])[: int(p["per_symbol"])]:
             score = 2.0 + (1 if prem >= 5 * float(p["min_premium"]) else 0) + (1 if vol >= 10 * max(oi, 1.0) else 0)
             name = L("看涨", "call") if kind == "C" else L("看跌", "put")
             iv = _f(r.get("impliedVolatility")) * 100
@@ -416,12 +561,70 @@ def scan_options(chains: dict[str, dict[str, tuple]], cfg: dict | None = None, w
                    "是否临近财报。",
                    "To check: whether open interest rises on the next trading day (a rise = the positions stayed); whether "
                    "neighbouring strikes of the same expiry also saw heavy volume (usually a spread); whether earnings are near.")],
-                prem, now or time.time()))
+                prem, now or time.time(),
+                _option_detail(sym, kind, str(expiry), r, vol, oi, last, prem, dte, book, tot, (spot or {}).get(sym) or {}, p)))
     items.sort(key=lambda i: (-i.score, -i.amount))
     return items[: int(p["max_items"])], notes
 
 
 # ---- futures ------------------------------------------------------------------------------------
+
+def _futures_detail(sym: str, c, last: float, z: float, thr: float, names: dict, board: dict) -> list[str]:
+    px = float(c.iloc[-1])
+    out = []
+    lv = []
+    for n in (20, 50):
+        if len(c) >= n:
+            m = float(c.iloc[-n:].mean())
+            d = (px / m - 1) * 100
+            lv.append(L(f"{n} 日均线 {m:,.2f}（现价在{'上方' if d >= 0 else '下方'} {abs(d):.1f}%）",
+                        f"{n}-day average {m:,.2f} (price {abs(d):.1f}% {'above' if d >= 0 else 'below'})"))
+    w = c.iloc[-60:]
+    lo, hi = float(w.min()), float(w.max())
+    where = (px - lo) / (hi - lo) * 100 if hi > lo else 50.0
+    lv.append(L(f"近 {len(w)} 个交易日区间 {lo:,.2f}–{hi:,.2f}，现在在区间的 {where:.0f}% 位置（0% = 最低，100% = 最高）",
+                f"range of the last {len(w)} sessions {lo:,.2f}–{hi:,.2f}, now at {where:.0f}% of it (0% = low, 100% = high)"))
+    chg = [L(f"近 {n} 日 {(px / float(c.iloc[-1 - n]) - 1) * 100:+.1f}%", f"{n} sessions {(px / float(c.iloc[-1 - n]) - 1) * 100:+.1f}%")
+           for n in (5, 20) if len(c) > n]
+    out.append(L("位置：", "Where it stands: ") + L("；", "; ").join(lv + chg))
+    rest = [L(f"{names[s]} {a:+.2f}%（{b:+.1f}σ）", f"{names[s]} {a:+.2f}% ({b:+.1f}σ)") for s, (a, b) in board.items() if s != sym]
+    if rest:
+        out.append(L("同一时间的其它品种：", "The other contracts at the same time: ") + L("；", "; ").join(rest))
+    eq = [board[s][1] for s in ("ES=F", "NQ=F") if s in board]
+    vix, bond = board.get("^VIX", (0, 0))[1], board.get("ZN=F", (0, 0))[1]
+    if eq:
+        e = sum(eq) / len(eq)
+        if e <= -1 and vix >= 1 and bond >= 0.5:
+            pat = L("股指跌、波动率升、美债涨：典型的避险组合（资金从股票转向债券）", "equities down, volatility up, Treasuries up: the classic risk-off mix (money moving from stocks to bonds)")
+        elif e <= -1 and bond <= -1:
+            pat = L("股债同跌：多见于利率 / 通胀预期上升，而不是单纯的避险", "stocks and bonds down together: more typical of rising rate / inflation expectations than of plain risk aversion")
+        elif e <= -1 and vix >= 1:
+            pat = L("股指跌、波动率升，但美债没有明显上涨：是股市自己的下跌，避险买盘不明显", "equities down and volatility up, but Treasuries not clearly higher: a fall in stocks themselves, without obvious flight to safety")
+        elif e >= 1 and vix <= -1:
+            pat = L("股指涨、波动率降：风险偏好回升", "equities up, volatility down: risk appetite returning")
+        elif abs(e) < 1 and abs(vix) < 1 and abs(bond) < 1:
+            pat = L("其它品种都在正常波动范围内：更像是这一个品种自己的事", "the other contracts are all within their normal range: more likely a matter of this one contract")
+        else:
+            pat = L("各品种没有形成一致的方向", "the contracts do not line up in one direction")
+        out.append(L(f"跨品种的样子：{pat}。", f"The cross-asset picture: {pat}."))
+    ret = c.pct_change()
+    zs = (ret / ret.rolling(60, min_periods=30).std().shift(1)).iloc[:-1]
+    same = zs[(zs <= -thr) if z < 0 else (zs >= thr)] if abs(z) >= thr else zs.iloc[0:0]
+    if len(same):
+        pos = [c.index.get_loc(d) for d in same.index]
+        nxt = [(float(c.iloc[k + 1]) / float(c.iloc[k]) - 1) * 100 for k in pos if k + 1 < len(c) - 1]
+        f5 = sorted((float(c.iloc[k + 5]) / float(c.iloc[k]) - 1) * 100 for k in pos if k + 5 < len(c))
+        cont = sum(1 for x in nxt if (x < 0) == (z < 0))
+        txt = L(f"过去 {len(c)} 个交易日里，同方向超过 {thr:g}σ 的单日变动出现过 {len(same)} 次",
+                f"In the last {len(c)} sessions a daily move beyond {thr:g}σ in the same direction happened {len(same)} time(s)")
+        if nxt:
+            txt += L(f"；次日继续同向的 {cont}/{len(nxt)} 次", f"; continued the same way the next day in {cont}/{len(nxt)}")
+        if f5:
+            txt += L(f"，之后 5 日涨跌的中位数 {f5[len(f5) // 2]:+.1f}%（最差 {f5[0]:+.1f}%，最好 {f5[-1]:+.1f}%）",
+                     f", median change over the next 5 sessions {f5[len(f5) // 2]:+.1f}% (worst {f5[0]:+.1f}%, best {f5[-1]:+.1f}%)")
+        out.append(L(f"这段时间里的同类情况：{txt}。样本很少，只说明大致的样子。", f"Like cases in this period: {txt}. A small sample; it only shows the rough shape."))
+    return out
+
 
 def scan_futures(bars: dict, cfg: dict | None = None, now: float | None = None) -> tuple[list[FlowItem], list[str]]:
     """``bars``: symbol -> daily OHLCV DataFrame."""
@@ -429,6 +632,14 @@ def scan_futures(bars: dict, cfg: dict | None = None, now: float | None = None) 
     names = dict(p["symbols"] or {})
     items: list[FlowItem] = []
     notes: list[str] = []
+    board: dict[str, tuple[float, float]] = {}            # symbol -> (last change %, z)
+    for sym in names:
+        df = bars.get(sym)
+        if df is None or len(df) < 30:
+            continue
+        r0 = df["close"].astype(float).pct_change().dropna()
+        sd0 = float(r0.iloc[-61:-1].std()) * 100
+        board[sym] = (float(r0.iloc[-1]) * 100, float(r0.iloc[-1]) * 100 / sd0 if sd0 else 0.0)
     for sym, name in names.items():
         df = bars.get(sym)
         if df is None or len(df) < 30:
@@ -469,9 +680,10 @@ def scan_futures(bars: dict, cfg: dict | None = None, now: float | None = None) 
                      "To check: whether data was released (CPI, payrolls, a rate decision) or there was breaking news; an "
                      "intraday figure is an unfinished day, so confirm after the close.")]
         day = f"{df.index[-1]:%Y%m%d}" if hasattr(df.index[-1], "strftime") else str(df.index[-1])
+        detail = _futures_detail(sym, c, last, z, float(p["z"]), names, board)
         items.append(FlowItem("futures", f"fut:{sym}:{day}", L(f"{name}（{sym}）", f"{name} ({sym})"), f"https://finance.yahoo.com/quote/{quote(sym)}",
                               round(score, 2), _severity(score), "macro", [], L(f"{float(c.iloc[-1]):,.2f}，{last:+.2f}%（{z:+.1f}σ）", f"{float(c.iloc[-1]):,.2f}, {last:+.2f}% ({z:+.1f}σ)"),
-                              facts, reading, 0.0, now or time.time()))
+                              facts, reading, 0.0, now or time.time(), detail))
     items.sort(key=lambda i: -i.score)
     return items, notes
 
@@ -488,11 +700,14 @@ def alert_items(report: FlowReport, cfg: dict | None = None) -> list[FlowItem]:
     return out[: int(s["max_alerts"])]
 
 
-def alert_text(i: FlowItem) -> tuple[str, str]:
+def alert_text(i: FlowItem, extra: list[str] | None = None) -> tuple[str, str]:
     src = {"polymarket": L("Polymarket 异动", "Polymarket unusual activity"),
            "options": L("期权异动", "Unusual options activity"),
            "futures": L("期货异动", "Unusual futures activity")}[i.source]
-    lines = [i.headline] + [f"· {f}" for f in i.facts] + [L("怎么看：", "How to read it:")] + [f"· {r}" for r in i.reading]
+    lines = [i.headline, L("【触发的规则】", "[Rules that fired]")] + [f"· {f}" for f in i.facts]
+    if i.detail:
+        lines += [L("【具体情况】", "[The details]")] + [f"· {d}" for d in i.detail]
+    lines += [L("【怎么看】", "[How to read it]")] + [f"· {r}" for r in i.reading] + list(extra or [])
     if i.url:
         lines.append(i.url)
     lines.append(L("这是按固定规则筛出的异常成交，不是预测，也不是买卖建议。",

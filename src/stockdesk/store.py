@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS alerts(
   data TEXT, created REAL, snoozed_until REAL DEFAULT 0, dismissed INTEGER DEFAULT 0,
   notified INTEGER DEFAULT 0, demo INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS wl_events(symbol TEXT, action TEXT, ts REAL, price REAL);
+CREATE TABLE IF NOT EXISTS congress_docs(
+  id TEXT PRIMARY KEY, chamber TEXT, member TEXT, state TEXT, filed TEXT, url TEXT, status TEXT, n INTEGER, seen REAL);
+CREATE TABLE IF NOT EXISTS congress_trades(id TEXT PRIMARY KEY, doc TEXT, filed TEXT, traded TEXT, ticker TEXT, data TEXT);
 """
 
 
@@ -210,6 +213,38 @@ class Store:
     def mark_notified(self, ids: Iterable[str]) -> None:
         with self._conn() as c:
             c.executemany("UPDATE alerts SET notified=1 WHERE id=?", [(i,) for i in ids])
+
+    # ---- disclosures by members of Congress ------------------------------
+    def congress_known(self) -> dict[str, str]:
+        """document key ("house:20036844") -> status ("ok" | "scan" | "error")."""
+        with self._conn() as c:
+            return {r[0]: r[1] for r in c.execute("SELECT id, status FROM congress_docs")}
+
+    def save_congress_doc(self, filing, status: str, trades: list) -> None:
+        key = f"{filing.chamber}:{filing.doc_id}"
+        with self._conn() as c:
+            c.execute("INSERT OR REPLACE INTO congress_docs VALUES(?,?,?,?,?,?,?,?,?)",
+                      (key, filing.chamber, filing.member, filing.state, filing.filed, filing.url, status, len(trades), time.time()))
+            c.execute("DELETE FROM congress_trades WHERE doc=?", (key,))
+            c.executemany("INSERT OR REPLACE INTO congress_trades VALUES(?,?,?,?,?,?)",
+                          [(t.id, key, t.filed, t.traded, t.ticker, json.dumps(t.to_dict())) for t in trades])
+
+    def clear_congress(self) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM congress_docs")
+            c.execute("DELETE FROM congress_trades")
+            c.execute("DELETE FROM meta WHERE key LIKE 'congress:todo:%' OR key LIKE 'congress:index:%'")
+
+    def load_congress_trades(self, since: str = "") -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute("SELECT data FROM congress_trades WHERE filed >= ? ORDER BY filed DESC, id", (since,)).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def congress_docs(self, since: str = "") -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute("SELECT id, chamber, member, state, filed, url, status, n, seen FROM congress_docs "
+                             "WHERE filed >= ? ORDER BY filed DESC", (since,)).fetchall()
+        return [dict(zip(("id", "chamber", "member", "state", "filed", "url", "status", "n", "seen"), r)) for r in rows]
 
     # ---- watchlist events -----------------------------------------------
     def add_wl_event(self, symbol: str, action: str, price: float | None = None, ts: float | None = None) -> None:

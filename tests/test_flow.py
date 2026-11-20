@@ -133,3 +133,58 @@ def test_alerts_put_bets_first_and_cap_other_sources():
     rep = flow.FlowReport(ts=NOW, items=[mk("options", n) for n in range(6)] + [mk("futures", 0), mk("polymarket", 0, "warn"),
                                                                               mk("polymarket", 1, "info")])
     assert [i.key for i in flow.alert_items(rep)] == ["polymarket0", "options0", "options1", "futures0"]
+
+
+def test_polymarket_details_spell_out_the_trades_and_the_pay_off():
+    ev = event()
+    ev["ev1"]["markets"][0].update({"oneDayPriceChange": 0.04, "volumeNum": 2_000_000, "liquidityNum": 150000,
+                                    "endDateIso": "2027-03-01"})
+    items, _ = scan([trade(80000, price=0.4)], ev)
+    d = "\n".join(items[0].detail)
+    assert "市场：现在的价格「Yes」55.0% /「No」45.0%" in d.replace(" 「", "「") and "2027-03-01 到期" in d
+    assert "Calm-Otter" in d and "买入「Yes」$80k @ 40.0%" in d
+    assert "兑现可收回 $200k（净赚 $120k，1.5 倍）" in d and "高于 40%" in d
+    assert "成交价 40.0% → 现在 55.0%（+15.0 个百分点），成交之后价格继续同方向走" in d
+    assert "24 小时成交的 20%" in d
+    title, body = flow.alert_text(items[0], ["【额外】", "· x"])
+    assert "【触发的规则】" in body and "【具体情况】" in body and "【怎么看】" in body and "【额外】" in body
+    assert body.index("【额外】") < body.index("不是买卖建议")
+    sold, _ = scan([trade(80000, price=0.4, side="SELL")], ev)
+    assert any("最大一笔是卖出" in x for x in sold[0].detail)
+    cashing, notes = scan([trade(300000, price=0.97, side="SELL")], ev)       # selling a near-certain holding: no information
+    assert cashing == [] and any("信息量低" in n for n in notes)
+
+
+def test_option_details_break_even_implied_move_and_other_legs():
+    calls = pd.DataFrame([
+        {"contractSymbol": "TSM1C400", "strike": 400.0, "lastPrice": 5.0, "volume": 4000, "openInterest": 500,
+         "impliedVolatility": 0.5, "inTheMoney": False},
+        {"contractSymbol": "TSM1C420", "strike": 420.0, "lastPrice": 2.0, "volume": 3900, "openInterest": 9000,
+         "impliedVolatility": 0.5, "inTheMoney": False}])
+    puts = pd.DataFrame([{"contractSymbol": "TSM1P300", "strike": 300.0, "lastPrice": 2.0, "volume": 100.0,
+                          "openInterest": 5000.0, "impliedVolatility": 0.6, "inTheMoney": False}])
+    far = f"{pd.Timestamp(NOW, unit='s') + pd.Timedelta(days=30):%Y-%m-%d}"
+    spot = {"TSM": {"price": 350.0, "vol20": 0.3, "high252": 390.0, "low252": 250.0}}
+    items, _ = flow.scan_options({"TSM": {far: (calls, puts)}}, None, {"TSM"}, NOW, spot)
+    d = "\n".join(items[0].detail)
+    assert "正股 350.00，行权价 400 高于现价 14.3%（价外）" in d and "还有 30 天" in d
+    assert "涨到 405.00（距现价 +15.7%）才不亏，这个价位在 52 周收盘高点 390.00 之上" in d
+    assert "一个标准差约 ±14.3%" in d and "行权价在这个范围之内" in d and "隐含波动明显高于实际" in d
+    assert "同到期日的 420 看涨也成交 3,900 张" in d and "价差" in d and "看跌看涨比 0.01" in d
+    bare, _ = flow.scan_options({"TSM": {far: (calls.iloc[:1], puts)}}, None, {"TSM"}, NOW)      # no stock price known
+    assert any("更像单腿交易" in x for x in bare[0].detail) and not any("盈亏平衡" in x for x in bare[0].detail)
+
+
+def test_futures_details_levels_other_contracts_and_pattern():
+    idx = pd.bdate_range("2025-06-01", periods=300)
+    calm = [100 + 0.2 * (i % 2) for i in range(299)]
+    mk = lambda last, bump=None: pd.DataFrame({"close": [c if i != bump else c * 0.97 for i, c in enumerate(calm)] + [last],
+                                               "volume": [1000.0] * 300}, index=idx)
+    bars = {"ES=F": mk(95.0, bump=150), "NQ=F": mk(94.0), "^VIX": mk(130.0), "ZN=F": mk(101.5), "GC=F": mk(100.1)}
+    items, _ = flow.scan_futures(bars, None, NOW)
+    es = next(i for i in items if i.key.startswith("fut:ES=F"))
+    d = "\n".join(es.detail)
+    assert "20 日均线" in d and "区间的 0% 位置" in d and "近 5 日" in d
+    assert "同一时间的其它品种" in d and "纳指 100 期货" in d and "VIX 波动率指数 +" in d
+    assert "典型的避险组合" in d
+    assert "同方向超过 2σ 的单日变动出现过 1 次" in d and "之后 5 日涨跌的中位数" in d
