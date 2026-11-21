@@ -181,3 +181,24 @@ def test_index_stop_alert_and_break_switch(env, monkeypatch):
     assert len(al) == 1 and ":stop:" in al[0].id and "出现止跌形态" in al[0].title and al[0].severity == "warn"
     for part in ("【止跌形态】", "四项条件成立 4/4", "作废条件", "【现在的位置】", "不是预测，也不是买卖建议"):
         assert part in al[0].body
+
+
+def test_staged_trim_steps_and_the_pause_when_the_fall_stops(env, monkeypatch):
+    from stockdesk import plans
+    eng, market, store, _ = env
+    base = [100 + 0.5 * (i % 2) for i in range(400)]
+    plan = {"start": "2026-01-01", "end": "2027-06-01", "exit_below": 90.0, "steps_below": [[90.0, 60], [81.0, 45], [72.0, 30], ["bad"]]}
+    st = plans.status("CCC", plan, price=85.0, weight_pct=70.0, qty=10, trades=[])
+    assert st.steps == [(90.0, 60.0), (81.0, 45.0), (72.0, 30.0)] and st.steps_reached == [(90.0, 60.0)]
+    assert [e[0] for e in st.events] == ["step"] and "第 1 步减仓价 90" in st.events[0][3] and "降到 60%" in st.events[0][3]      # no separate bottom-line event
+    assert len(plans.status("CCC", plan, price=80.0, weight_pct=70.0, qty=10, trades=[]).events) == 2
+    monkeypatch.setattr(plans, "load", lambda path=None: {"CCC": plan})
+    _set(market, "CCC", base + FALL)                         # under the first step, still falling
+    al = [a for a in eng.refresh(force=True).alerts if a.kind == "plan_level"]
+    assert [a.data["key"] for a in al] == ["step"] and al[0].severity == "high" and "减仓价 81.00 → 占比 45%" in al[0].body
+    for word in ("市值", "盈亏", "70.0%"):
+        assert word not in al[0].body
+    _set(market, "CCC", base + FALL + [86.0, 87.5, 89.0, 89.5, 87.6, 86.9, 89.9])    # the fall stops below the step
+    al = {a.data["key"]: a for a in eng.refresh(force=True).alerts if a.kind == "plan_level"}
+    assert set(al) == {"step", "pause"} and "暂停减仓" in al["pause"].title and "四项条件成立 4/4" in al["pause"].body
+    assert "止跌形态成立时暂停分步减仓" in al["pause"].body and "不会下单" in al["pause"].body

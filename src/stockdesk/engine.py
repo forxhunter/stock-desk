@@ -977,13 +977,30 @@ class Engine:
                 tag = ""
                 if self.cfg.get("alerts.stop_fall.require_for_buy", True) and st.buy_levels:
                     sf, rec, tag = self._buy_gate(sym, st)
+                if st.steps_reached:                    # the user's rule: once the fall has stopped, pause the staged trim
+                    try:
+                        who = st.follow or sym
+                        sp, sp_rec = self._stopfall(who, self._daily.get(who), record=True)
+                        if sp.ok and sp.formed:
+                            body = L(f"{who} 的止跌形态已成立（这一轮低点 {plans.fmt_px(sp.low)}，{sp.low_date:%m-%d}）。你在计划里写的是：止跌形态成立时暂停分步减仓、重新评估。"
+                                     f"已到过的减仓价：{' / '.join(plans.fmt(x) for x, _ in st.steps_reached)}。",
+                                     f"The stop-falling pattern is formed on {who} (low of this leg {plans.fmt_px(sp.low)}, {sp.low_date:%m-%d}). Your plan says: when the pattern "
+                                     f"is formed, pause the staged trim and reassess. Steps already reached: {' / '.join(plans.fmt(x) for x, _ in st.steps_reached)}.")
+                            body += "\n" + insight.tidy("\n".join([insight.head("止跌形态", "The stop-falling pattern")] + insight.stopfall_lines(sp, sp_rec)))
+                            out.append(Alert(f"plan:{sym}:pause:{sp.low_date:%Y%m%d}", "plan_level", sym, "warn",
+                                             L(f"止跌形态成立，按你的计划暂停减仓：{sym}", f"Stop-falling pattern formed; your plan says pause the trim: {sym}"),
+                                             body + L("\n规则是你自己在计划里写的；程序只负责提醒，不会下单。",
+                                                      "\nThe rule is one you wrote in your plan; the program only reminds you and never places orders."),
+                                             {"key": "pause", "level": sp.low}))
+                    except Exception:
+                        log.exception("plan pause check failed for %s", sym)
                 for key, level, title, text in st.events:
                     try:
                         text = self._plan_text(snap, sym, st, key, level, text, sf if key == "buy" else None, rec)
                     except Exception:
                         log.exception("plan write-up failed for %s", sym)
                     out.append(Alert(f"plan:{sym}:{key}:{level:.10g}" + (tag if key == "buy" else ""), "plan_level", sym,
-                                     "high" if key == "exit" else "warn", title,
+                                     "high" if key in ("exit", "step") else "warn", title,
                                      text + L("\n价位是你自己在计划里写的；程序只负责提醒，不会下单。",
                                               "\nThe levels are ones you wrote in your plan; the program only reminds you and never places orders."),
                                      {"key": key, "level": level}))

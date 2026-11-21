@@ -530,6 +530,7 @@ def plan_body(text: str, st, key: str, level: float, *, symbol: str, bars: pd.Da
     px = st.check_price
     unit = f" {st.level_ccy}" if st.follow and st.level_ccy else ""
     what = {"buy": L("买入价位", "buy level"), "reduce": L("减仓价位", "trim level"), "target": L("目标价", "target price"),
+            "step": L("分步减仓价", "staged-trim step"),
             "exit": L("底线价", "bottom-line price")}.get(key, key)
     out = [head("这次触发", "What triggered")]
     past = (px / level - 1) * 100 if level else 0.0
@@ -546,6 +547,9 @@ def plan_body(text: str, st, key: str, level: float, *, symbol: str, bars: pd.Da
         others.append(L(f"目标价 {num(st.target_price)}（{gap(st.target_price, px)}）", f"target {num(st.target_price)} ({gap(st.target_price, px)})"))
     if st.exit_below and key != "exit":
         others.append(L(f"底线价 {num(st.exit_below)}（{gap(st.exit_below, px)}）", f"bottom line {num(st.exit_below)} ({gap(st.exit_below, px)})"))
+    for lvl, w in getattr(st, "steps", []):
+        if lvl != level:
+            others.append(L(f"减仓价 {num(lvl)} → 占比 {w:g}%（{gap(lvl, px)}）", f"trim step {num(lvl)} → weight {w:g}% ({gap(lvl, px)})"))
     if st.days_left:
         others.append(L(f"计划还剩 {st.days_left} 天", f"{st.days_left} days left in the plan"))
     if others:
@@ -587,7 +591,7 @@ def plan_body(text: str, st, key: str, level: float, *, symbol: str, bars: pd.Da
                          "· The pacing: " + ", ".join(([f"the next level is {num(st.next_buy)} ({gap(st.next_buy, px)} away)"] if st.next_buy is not None else [])
                                                       + ([f"the bottom line is {num(st.exit_below)} ({gap(st.exit_below, px)})"] if st.exit_below else []))
                          + "; how much goes to this step and to the later ones is something the plan should fix in advance."))
-    elif key == "exit":
+    elif key in ("exit", "step"):
         out.append(L("· 底线价是你事先写下的“到这里就重新评估或退出”的位置。先确认是收盘价跌破还是盘中刺破，再对照计划里写的做法。",
                      "· The bottom line is where you wrote in advance 'reassess or exit here'. First confirm whether it is a closing break or an intraday dip, then check what the plan says to do."))
         out.append("· " + versus + L("大盘破位带下来的下跌和个股自己的坏消息，性质不同。",

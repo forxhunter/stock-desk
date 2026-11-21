@@ -139,6 +139,9 @@ class PlanStatus:
     held: bool = True
     notes: str = ""
     missing: list[str] = field(default_factory=list)
+    steps: list[tuple[float, float]] = field(default_factory=list)          # the user's staged trims on the way down:
+    #                                                                         (price, weight to cut to), highest price first
+    steps_reached: list[tuple[float, float]] = field(default_factory=list)
     flags: list[tuple[str, str]] = field(default_factory=list)      # (level, text)
     building: bool = False
     # a plan can be written in the prices of another stock (e.g. HY9H planned on 000660.KS):
@@ -173,6 +176,14 @@ def status(symbol: str, plan: dict, *, price: float, weight_pct: float, qty: flo
     st.reduce_levels = sorted(x for x in (_num(v) for v in (plan.get("reduce_above") or [])) if x)
     st.buy_levels = sorted((x for x in (_num(v) for v in (plan.get("buy_below") or [])) if x), reverse=True)
     st.target_price = _num(plan.get("target_price"))
+    for row in plan.get("steps_below") or []:
+        try:
+            lvl, w = float(row[0]), float(row[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if lvl > 0:
+            st.steps.append((lvl, w))
+    st.steps.sort(reverse=True)
     st.max_weight_pct = _num(plan.get("max_weight_pct"))
     kind = str(plan.get("kind") or "")
     filled = bool(st.buy_levels or st.target_price or st.max_weight_pct)
@@ -230,7 +241,14 @@ def status(symbol: str, plan: dict, *, price: float, weight_pct: float, qty: flo
         st.missing.append(L("起止日期", "start and end dates"))
     if px == px:      # not NaN
         now = L(f"{who} 现价 {fmt_px(px)}{unit}", f"{who} price {fmt_px(px)}{unit}")
-        if st.exit_below and px < st.exit_below:
+        for k, (lvl, w) in enumerate(st.steps, 1):
+            if px < lvl:
+                st.steps_reached.append((lvl, w))
+                text = L(f"{now}，低于{mine}写下的第 {k} 步减仓价 {fmt(lvl)}：你写的是把占比降到 {w:g}%。",
+                         f"{now}, below step {k} of the staged trim written in {mine}, {fmt(lvl)}: you wrote to cut the weight to {w:g}%.")
+                st.flags.append(("high", text))
+                st.events.append(("step", lvl, L(f"到达你的第 {k} 步减仓价：{tag}", f"Reached step {k} of your staged trim: {tag}"), text))
+        if st.exit_below and px < st.exit_below and not st.steps:
             text = L(f"{now}，低于{mine}写下的底线价 {fmt(st.exit_below)}。",
                      f"{now}, below the bottom-line price of {fmt(st.exit_below)} written in {mine}.")
             st.flags.append(("high", text))
