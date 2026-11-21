@@ -971,7 +971,8 @@ class Engine:
                 if v is None:
                     continue
                 st = plans.status(sym, plan, price=v.price, weight_pct=v.weight * 100, qty=v.qty, trades=trades,
-                                  ccy=v.currency, **self._follow_info(snap, sym, v, plan))
+                                  ccy=v.currency, last_close=self._final_close(str(plan.get("follow") or sym).upper()),
+                                  **self._follow_info(snap, sym, v, plan))
                 snap.plans.append(st)
                 sf = rec = None
                 tag = ""
@@ -1007,6 +1008,19 @@ class Engine:
         except Exception:
             log.exception("plans failed")
         return out
+
+    def _final_close(self, sym: str, now: pd.Timestamp | None = None) -> tuple | None:
+        """(close, date) of the last finished session of ``sym``: today's bar only counts once its market has closed."""
+        bars = self._daily.get(sym)
+        if bars is None or not len(bars):
+            return None
+        now = now if now is not None else pd.Timestamp.now(tz="UTC").tz_localize(None)
+        hours = 7.0 if sym.endswith((".KS", ".KQ", ".T", ".HK", ".SS", ".SZ", ".TW")) else 17.0 if "." in sym else 21.5    # UTC, with a margin
+        last = bars.index[-1]
+        k = -1 if now >= last + pd.Timedelta(hours=hours) else -2
+        if len(bars) < -k:
+            return None
+        return float(bars["close"].iloc[k]), bars.index[k]
 
     def _stopfall(self, sym: str, bars: pd.DataFrame | None, long: pd.DataFrame | None = None, record: bool = False):
         """(stop-falling pattern on the latest bar, the record of the same signal in this series or None)."""

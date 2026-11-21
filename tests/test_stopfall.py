@@ -192,6 +192,19 @@ def test_staged_trim_steps_and_the_pause_when_the_fall_stops(env, monkeypatch):
     assert st.steps == [(90.0, 60.0), (81.0, 45.0), (72.0, 30.0)] and st.steps_reached == [(90.0, 60.0)]
     assert [e[0] for e in st.events] == ["step"] and "第 1 步减仓价 90" in st.events[0][3] and "降到 60%" in st.events[0][3]      # no separate bottom-line event
     assert len(plans.status("CCC", plan, price=80.0, weight_pct=70.0, qty=10, trades=[]).events) == 2
+    closed = plans.status("CCC", plan, price=85.0, weight_pct=70.0, qty=10, trades=[], last_close=(92.0, pd.Timestamp("2026-11-19")))
+    assert closed.steps_reached == [] and closed.events == []                 # an intraday dip under the step: the close decides
+    closed = plans.status("CCC", plan, price=95.0, weight_pct=70.0, qty=10, trades=[], last_close=(88.0, pd.Timestamp("2026-11-19")))
+    assert [e[0] for e in closed.events] == ["step"] and "11-19 收盘 88.00" in closed.events[0][3]
+    live = plans.status("CCC", {**plan, "steps_on": "price"}, price=85.0, weight_pct=70.0, qty=10, trades=[], last_close=(92.0, pd.Timestamp("2026-11-19")))
+    assert len(live.events) == 1
+    day = pd.Timestamp("2026-11-20")
+    eng._daily["X.KS"] = eng._daily["Y"] = pd.DataFrame({"close": [1.0, 2.0]}, index=[day - pd.Timedelta(days=1), day])
+    assert eng._final_close("X.KS", day + pd.Timedelta(hours=5))[0] == 1.0 and eng._final_close("X.KS", day + pd.Timedelta(hours=8))[0] == 2.0   # Seoul has closed
+    assert eng._final_close("Y", day + pd.Timedelta(hours=20))[0] == 1.0 and eng._final_close("Y", day + pd.Timedelta(hours=22))[0] == 2.0       # New York has
+    assert eng._final_close("NONE") is None
+    monkeypatch.setattr(type(eng), "_final_close", lambda self, sym, now=None: (float(self._daily[sym]["close"].iloc[-1]), self._daily[sym].index[-1])
+                        if sym in self._daily else None)
     monkeypatch.setattr(plans, "load", lambda path=None: {"CCC": plan})
     _set(market, "CCC", base + FALL)                         # under the first step, still falling
     al = [a for a in eng.refresh(force=True).alerts if a.kind == "plan_level"]
