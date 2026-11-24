@@ -81,7 +81,7 @@ def test_index_alert_text_has_every_section_and_no_advice():
     other = kl.state("^IXIC", make_bars(rising(300), spread=0.002))
     title, body = insight.index_alert(st, "down", st.broken, others={"^GSPC": st, "^IXIC": other},
                                       vix={"price": 31.0, "chg": 4.0, "pct": 14.8}, index_bars=bars)
-    assert title.startswith("标普 500 收盘跌破") and "等" in title
+    assert title.startswith("标普 500 收盘跌破") and "同时失守" in title
     for section in ("【发生了什么】", "【现在的位置】", "【下方的关键位】", "【历史上同类情况】", "【接下来看什么】"):
         assert section in body
     assert "上涨的比例" in body and "5 个交易日内收回" in body and "恐慌水平" in body and "纳斯达克综合指数" in body

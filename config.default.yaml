@@ -7,7 +7,7 @@ app:
   language: auto                # 界面语言：auto（按系统语言）/ zh / en；改后需重启。Interface language (restart to apply)
   refresh_seconds: 120          # 行情自动刷新间隔
   history_period: 5y            # 日线历史长度（回测 / 指标用）
-  history_ttl_minutes: 30       # 日线缓存有效期
+  history_ttl_minutes: 30       # 日线历史重新下载的间隔；当天这根日线每次刷新都会用最新的分时数据更新（价格、最高最低、累计成交量）
   benchmark: SPY                # 相对强弱的比较基准
   up_color: green               # green = 美股习惯(绿涨红跌)；red = A股习惯(红涨绿跌)
   always_on_top: true
@@ -29,6 +29,7 @@ alerts:
     min_score: 5
     min_volume_score: 2         # 放量见底 / 放量上涨确认 / 涨时量大于跌时量，三项里至少成立几项
     min_drawdown_pct: 20.0      # 距 52 周高点至少跌这么多才谈得上“筑底”
+    require: {}                 # 个别股票额外要求成立的条件，例如 {INTC: [vol_follow]} = 还必须出现“放量上涨确认”才提醒
   stop_fall:                    # 止跌形态（完整公式在 src/stockdesk/quant/stopfall.py 顶部）：下跌前提 + 低点守住 + 反转结构 + 站回 5 日线
     require_for_buy: true       # 计划里的买入价位：价格跌到价位不提醒，等止跌形态成立才提醒（false = 到价就提醒）
     lookback: 20                # 低点 t* 取最近多少个交易日的最低点
@@ -67,6 +68,7 @@ notify:
     smtp_host: ""               # 例如 smtp.gmail.com / smtp.qq.com / smtp.163.com
     smtp_port: 587              # 587 = STARTTLS，465 = SSL
     username: ""
+    details: false              # true = 邮件末尾附上每条提醒的完整分析；默认只发按重要程度排好的简报
     kinds: [bottoming, plan_level, flow, index_level, congress, range]   # 哪些提醒发邮件：筑底信号、到达你在计划里写的价位、异动扫描（只发高级别）、大盘关键位破位、议员交易、震荡区间上下沿
 
 briefing:                       # 每日简报（分析中心第一页）

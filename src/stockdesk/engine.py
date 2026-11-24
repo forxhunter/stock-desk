@@ -11,7 +11,7 @@ from typing import Callable
 
 import pandas as pd
 
-from . import briefing, congress, credentials, flow, insight, notify, paths, plans, playbook
+from . import brief, briefing, congress, credentials, flow, insight, notify, paths, plans, playbook
 from .adapters import congress as congress_src
 from .adapters.base import AdapterError, AdapterUnavailable, BrokerAdapter, RateLimited
 from .adapters.ibkr_cp import IbkrClientPortalAdapter
@@ -315,6 +315,11 @@ class Engine:
             for s, df in intr.items():
                 self._intraday[s] = df
                 self.store.save_bars(s, "15m", df)
+                if s in self._daily:               # today's daily bar follows the latest intraday bars, every cycle
+                    try:
+                        self._daily[s] = self.merge_today(s, self._daily[s], df)
+                    except Exception:
+                        log.exception("merging today's bar failed for %s", s)
             if not intr:
                 raise AdapterUnavailable(L("行情源没有返回数据", "The quote source returned no data"))
             self._market_msg = ""
@@ -327,6 +332,39 @@ class Engine:
             self._market_msg = L(f"{e}，暂用本地缓存", f"{e}; using the local cache for now")
             self._status["yahoo"] = ("off", self._market_msg)
             log.warning("market data: %s", e)
+
+    @staticmethod
+    def exchange_tz(sym: str) -> str:
+        for suffix, tz in ((".KS", "Asia/Seoul"), (".KQ", "Asia/Seoul"), (".T", "Asia/Tokyo"), (".HK", "Asia/Hong_Kong"),
+                           (".SS", "Asia/Shanghai"), (".SZ", "Asia/Shanghai"), (".TW", "Asia/Taipei"), (".L", "Europe/London"),
+                           (".F", "Europe/Berlin"), (".DE", "Europe/Berlin"), (".PA", "Europe/Paris"), (".AS", "Europe/Amsterdam")):
+            if sym.upper().endswith(suffix):
+                return tz
+        return "America/New_York"
+
+    @classmethod
+    def merge_today(cls, sym: str, daily: pd.DataFrame, intr: pd.DataFrame) -> pd.DataFrame:
+        """``daily`` with its last session rebuilt from the intraday bars of that day (price, high, low and the volume
+        traded so far), so checks that read daily bars see the latest quote instead of a copy up to half an hour old."""
+        if intr is None or not len(intr) or daily is None or not len(daily):
+            return daily
+        idx = intr.index.tz_localize("UTC").tz_convert(cls.exchange_tz(sym))
+        day = idx[-1].date()
+        today = intr[idx.date == day]
+        if not len(today):
+            return daily
+        stamp = pd.Timestamp(day)
+        row = {"open": float(today["open"].iloc[0]), "high": float(today["high"].max()), "low": float(today["low"].min()),
+               "close": float(today["close"].iloc[-1]), "volume": float(today["volume"].sum())}
+        if stamp > daily.index[-1]:
+            return pd.concat([daily, pd.DataFrame([row], index=[stamp])])
+        if stamp == daily.index[-1]:
+            out = daily.copy()
+            out.loc[stamp, ["high", "low", "close", "volume"]] = [
+                max(row["high"], float(out["high"].iloc[-1])), min(row["low"], float(out["low"].iloc[-1])), row["close"],
+                max(row["volume"], float(out["volume"].iloc[-1]))]
+            return out
+        return daily
 
     @staticmethod
     def _session_stats(intr: pd.DataFrame | None, daily: pd.DataFrame | None):
@@ -718,7 +756,8 @@ class Engine:
                 log.exception("congress write-up failed")
                 continue
             out.append(Alert(f"cg:{note.doc}", "congress", note.watch[0] if note.watch else "", sev, title, body,
-                             {"member": note.member, "tier": m.tier if m else "", "tickers": [c.ticker for c in note.calls][:20]}))
+                             {"member": note.member, "tier": m.tier if m else "", "tickers": [c.ticker for c in note.calls][:20],
+                              "brief": brief.congress_note(note, m, congress.TIER.get(m.tier, "") if m else "")}))
         return out
 
     def _flow_alerts(self) -> list[Alert]:
@@ -736,7 +775,7 @@ class Engine:
                     log.exception("flow write-up failed")
             title, body = flow.alert_text(i, extra)
             out.append(Alert(f"flow:{i.key}", "flow", i.tickers[0] if i.tickers else "", i.severity, title, body,
-                             {"source": i.source, "score": i.score, "amount": i.amount}))
+                             {"source": i.source, "score": i.score, "amount": i.amount, "brief": brief.flow_item(i)}))
         return out
 
     # ------------------------------------------------------------------ main refresh
@@ -922,8 +961,10 @@ class Engine:
                 continue
             if st.ok:
                 snap.bottoms[sym] = st
+        need_of = {str(k).upper(): set(v or []) for k, v in (c.get("require") or {}).items()}
         for sym, st in snap.bottoms.items():
-            if st.triggered:
+            need = need_of.get(sym.upper(), set())
+            if st.triggered and all(ok for k, ok, _ in st.checks if k in need):
                 label = L(f"{sym}（{names[sym]}）", f"{sym} ({names[sym]})") if sym in names else sym
                 lines = [L(f"{label} 出现有成交量确认的筑底信号：价格条件 {st.score}/6 成立（门槛 {st.min_score}），"
                            f"成交量条件 {st.vol_score}/3 成立（门槛 {st.min_vol_score}）。",
@@ -935,6 +976,9 @@ class Engine:
                            f"low of this leg {st.base_low:,.2f} ({st.base_low_date:%m-%d}).")]
                 lines += [L(f"{'✓' if ok else '✗'} {bottom_labels[k]}：{d}", f"{'✓' if ok else '✗'} {bottom_labels[k]}: {d}")
                           for k, ok, d in st.checks]
+                if need:
+                    lines.append(L("你为这只股票额外要求的条件（都已成立）：" + "、".join(bottom_labels.get(k, k) for k in sorted(need)),
+                                   "Extra conditions you required for this stock (all met): " + ", ".join(bottom_labels.get(k, k) for k in sorted(need))))
                 peers = [L(f"{o}：{snap.bottoms[o].summary}", f"{o}: {snap.bottoms[o].summary}")
                          + (L("（也已达到门槛）", " (threshold also met)") if snap.bottoms[o].triggered else "")
                          for o in dict.fromkeys(symbols) if o != sym and o in snap.bottoms]
@@ -958,7 +1002,7 @@ class Engine:
                                "above, this signal is void."))
                 out.append(Alert(f"bottom:{sym}:{st.base_low_date:%Y%m%d}", "bottoming", sym, "warn",
                                  L(f"筑底信号：{label}", f"Bottoming signal: {label}"), "\n".join(lines),
-                                 {"score": st.score, "vol_score": st.vol_score, "base_low": st.base_low}))
+                                 {"score": st.score, "vol_score": st.vol_score, "base_low": st.base_low, "brief": brief.bottom(sym, st, need)}))
         return out
 
     def _follow_info(self, snap: Snapshot, sym: str, v: TickerView, plan: dict) -> dict:
@@ -1010,7 +1054,10 @@ class Engine:
                                              L(f"止跌形态成立，按你的计划暂停减仓：{sym}", f"Stop-falling pattern formed; your plan says pause the trim: {sym}"),
                                              body + L("\n规则是你自己在计划里写的；程序只负责提醒，不会下单。",
                                                       "\nThe rule is one you wrote in your plan; the program only reminds you and never places orders."),
-                                             {"key": "pause", "level": sp.low}))
+                                             {"key": "pause", "level": sp.low, "brief": [
+                                                 L(f"{who} 止跌形态成立（低点 {plans.fmt_px(sp.low)}，{sp.low_date:%m-%d}）", f"Stop-falling pattern on {who} (low {plans.fmt_px(sp.low)}, {sp.low_date:%m-%d})"),
+                                                 L("你的规则：止跌形态成立时暂停分步减仓、重新评估", "Your rule: pause the staged trim and reassess when the pattern forms"),
+                                                 L(f"作废位：收盘跌破 {plans.fmt_px(sp.low)}", f"Void below {plans.fmt_px(sp.low)}")]}))
                     except Exception:
                         log.exception("plan pause check failed for %s", sym)
                 for key, level, title, text in st.events:
@@ -1022,7 +1069,7 @@ class Engine:
                                      "high" if key in ("exit", "step") else "warn", title,
                                      text + L("\n价位是你自己在计划里写的；程序只负责提醒，不会下单。",
                                               "\nThe levels are ones you wrote in your plan; the program only reminds you and never places orders."),
-                                     {"key": key, "level": level}))
+                                     {"key": key, "level": level, "brief": brief.plan(key, level, st, text)}))
         except Exception:
             log.exception("plans failed")
         return out
@@ -1135,7 +1182,8 @@ class Engine:
                 log.exception("range write-up failed for %s", v.symbol)
                 continue
             out.append(Alert(f"range:{v.symbol}:{edge}:{anchor}", "range", v.symbol, "warn", title, body,
-                             {"edge": edge, "support": rg.support, "resistance": rg.resistance}))
+                             {"edge": edge, "support": rg.support, "resistance": rg.resistance,
+                              "brief": brief.range_edge(v.symbol, rg, edge, v.price, self._sf_cache[key][0])}))
         return out
 
     def _plan_text(self, snap: Snapshot, sym: str, st, key: str, level: float, text: str, stop=None, stop_rec=None) -> str:
@@ -1329,7 +1377,7 @@ class Engine:
                     if sf.ok and sf.formed and sf.formed_on is not None and (now.asof - sf.formed_on).days <= 7:
                         title, body = insight.index_stop_alert(now, sf, rec, others=snap.indices, vix=snap.vix)
                         out.append(Alert(f"idx:{sym}:stop:{sf.low_date:%Y%m%d}", "index_level", sym, "warn", title, body,
-                                         {"direction": "stop", "low": sf.low, "price": now.price}))
+                                         {"direction": "stop", "low": sf.low, "price": now.price, "brief": brief.index_stop(now, sf, snap.vix)}))
                 except Exception:
                     log.exception("index stop-fall failed for %s", sym)
             for direction, hits in (("down", now.broken), ("up", now.reclaimed)):
@@ -1345,6 +1393,8 @@ class Engine:
                                 mine += playbook.rung_lines(ib, x.n)
                     title, body = insight.index_alert(now, direction, hits, others=snap.indices, vix=snap.vix,
                                                       views=snap.tickers, index_bars=bars, hold=hold, playbook=mine)
+                    said = next((x.split("：", 1)[-1].split(": ", 1)[-1] for x in mine if "你在预案里写的是" in x or "your playbook says" in x), "")
+                    short = brief.index_down(now, direction, hits, snap.vix, said)
                 except Exception:
                     log.exception("index write-up failed for %s", sym)
                     continue
@@ -1353,7 +1403,7 @@ class Engine:
                        else ("high" if major else "warn"))
                 out.append(Alert(f"idx:{sym}:{direction}:{now.asof:%Y%m%d}:" + (f"live:{top.key}" if now.live else "close"),
                                  "index_level", sym, sev, title, body,
-                                 {"levels": [x.key for x in hits], "price": now.price, "direction": direction}))
+                                 {"levels": [x.key for x in hits], "price": now.price, "direction": direction, "brief": short}))
         return out
 
     def mail_role_ok(self) -> bool:
@@ -1396,7 +1446,7 @@ class Engine:
             self._status.setdefault("email", ("ok", L(f"邮件提醒：已开启（发往 {s['to']}）", f"E-mail alerts: on (sending to {s['to']})")))
             return
         try:
-            notify.send(s, *notify.alert_mail(todo))
+            notify.send(s, *notify.alert_mail(todo, bool(self.cfg.get("notify.email.details", False))))
             self.store.set_meta("email:sent", sorted(sent | {a.id for a in todo})[-500:])
             if flows or cgs:
                 self.store.set_meta("email:flow_quota", {day: int(quota.get(day, 0)) + len(flows),

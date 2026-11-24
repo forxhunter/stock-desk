@@ -317,7 +317,8 @@ def index_alert(st: kl.IndexState, direction: str, hits: list, *, others: dict |
     """(title, body) for the levels ``hits`` that the index broke on its latest bar."""
     top = hits[0]
     down = direction == "down"
-    more = L(f" 等 {len(hits)} 个关键位", f" and {len(hits) - 1} more level(s)") if len(hits) > 1 else ""
+    more = L(f"（同时失守 {len(hits) - 1} 个其它关键位）" if direction == "down" else f"（同时站上 {len(hits) - 1} 个其它关键位）",
+             f" (plus {len(hits) - 1} other level(s))") if len(hits) > 1 else ""
     when = L("盘中", "intraday") if st.live else L("收盘", "at the close")
     if down:
         title = L(f"{st.name}{when}跌破{top.name}{more}",

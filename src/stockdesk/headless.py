@@ -16,7 +16,7 @@ import sys
 import time
 from datetime import datetime
 
-from . import congress, flow, insight, notify, paths
+from . import brief, congress, flow, insight, notify, paths
 from .i18n import L
 from .briefing import RANGE_TEXT
 from .engine import Engine, Snapshot
@@ -33,6 +33,9 @@ def digest(snap: Snapshot, now: float | None = None) -> tuple[str, str]:
     """Plain-text daily summary: signals and levels only, no holdings, amounts or P&L."""
     day = datetime.fromtimestamp(now or time.time())
     out = [L(f"Stock Desk 每日信号汇总 · {day:%Y-%m-%d %H:%M}", f"Stock Desk daily signal digest · {day:%Y-%m-%d %H:%M}"), ""]
+    points = brief.day_points(snap)
+    if points:
+        out += [L("■ 今日要点", "■ Today in brief")] + [f"  · {x}" for x in points] + ["", L("■ 明细", "■ Details"), ""]
 
     market = insight.digest_lines(snap.indices, snap.vix)
     if market:

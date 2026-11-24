@@ -313,8 +313,8 @@ def state(symbol: str, bars: pd.DataFrame, cfg: dict | None = None, *, name: str
         st.inforce = (then, c.index[start], len(c) - 1 - start,
                       record(c, ev, lvl, then.kind, "down", tuple(p["horizons"]), upto=start))
     st.levels.sort(key=lambda x: -x.value)
-    st.broken.sort(key=lambda x: (-x.weight, -x.value))
-    st.reclaimed.sort(key=lambda x: (-x.weight, x.value))
+    st.broken.sort(key=lambda x: (x.kind != "user", -x.weight, -x.value))        # the user's own levels lead
+    st.reclaimed.sort(key=lambda x: (x.kind != "user", -x.weight, x.value))
 
     h, lo = full["high"].astype(float), full["low"].astype(float)
     tail = c.tail(252)

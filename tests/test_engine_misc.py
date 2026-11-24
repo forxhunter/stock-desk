@@ -502,3 +502,58 @@ def test_plan_can_follow_another_stock(env, monkeypatch):
     al = [a for a in snap.alerts if a.kind == "plan_level"]
     assert len(al) == 1 and al[0].symbol == "AAA" and "BBB 现价" in al[0].body and "按 BBB" in al[0].title
     assert snap.plans[0].check_price == pytest.approx(snap.get("BBB").price) and snap.plans[0].to_local == 1.0
+
+
+def test_bottoming_can_require_extra_conditions_per_symbol(env, monkeypatch):
+    from test_range_trading import _fall_then_base
+    eng, market, store, _ = env
+    base = _fall_then_base(True)
+    base.index = market.daily["SPY"].index[-len(base):]
+    market.daily["CCC"] = base
+    eng.cfg.set("alerts.bottoming", {"enabled": True, "symbols": ["CCC"], "min_score": 5})
+    snap = eng.refresh(force=True)
+    st = snap.bottoms["CCC"]
+    assert st.triggered and [a for a in snap.alerts if a.kind == "bottoming"]
+    missing = next((k for k, ok, _ in st.checks if not ok), None)
+    store2 = [a.id for a in snap.alerts if a.kind == "bottoming"]
+    with store._conn() as c:
+        c.execute("DELETE FROM alerts")
+    if missing:                                             # a condition that does not hold blocks the alert
+        eng.cfg.set("alerts.bottoming.require", {"ccc": [missing]})
+        assert not [a for a in eng.build_snapshot().alerts if a.kind == "bottoming"]
+    held = next(k for k, ok, _ in st.checks if ok and k.startswith("vol"))
+    eng.cfg.set("alerts.bottoming.require", {"CCC": [held]})
+    al = [a for a in eng.build_snapshot().alerts if a.kind == "bottoming"]
+    assert [a.id for a in al] == store2 and "额外要求的条件（都已成立）" in al[0].body
+
+
+def test_todays_daily_bar_follows_the_intraday_bars():
+    day = pd.Timestamp("2026-11-24")
+    daily = pd.DataFrame({"open": [10.0, 11.0], "high": [10.5, 11.5], "low": [9.5, 10.5], "close": [10.2, 11.2],
+                          "volume": [1e6, 2e5]}, index=[day - pd.Timedelta(days=1), day])           # a stale copy of today
+    utc = pd.DatetimeIndex([day + pd.Timedelta(hours=h) for h in (15, 16, 17)])                     # 10:00-12:00 New York
+    intr = pd.DataFrame({"open": [11.0, 11.4, 11.9], "high": [11.6, 12.0, 12.4], "low": [10.9, 11.3, 11.8],
+                         "close": [11.5, 11.9, 12.3], "volume": [3e5, 4e5, 5e5]}, index=utc)
+    out = Engine.merge_today("INTC", daily, intr)
+    assert out["close"].iloc[-1] == 12.3 and out["high"].iloc[-1] == 12.4 and out["volume"].iloc[-1] == 1.2e6 and len(out) == 2
+    nxt = Engine.merge_today("INTC", daily.iloc[:1], intr)                                           # the day is not in the daily bars yet
+    assert len(nxt) == 2 and nxt.index[-1] == day and nxt["volume"].iloc[-1] == 1.2e6
+    seoul = pd.DatetimeIndex([day + pd.Timedelta(hours=h) for h in (0, 1)])                          # 09:00-10:00 in Seoul
+    ks = Engine.merge_today("000660.KS", daily.iloc[:1], intr.iloc[:2].set_axis(seoul))
+    assert ks.index[-1] == day and Engine.exchange_tz("HY9H.F") == "Europe/Berlin"
+
+
+def test_alert_mail_groups_by_importance_and_keeps_it_short():
+    from stockdesk import notify
+    mk = lambda i, kind, sev, brief=None: Alert(f"a{i}", kind, "X", sev, f"title {i}", "first line\n" + "long analysis\n" * 40,
+                                                {"brief": brief} if brief else {})
+    alerts = [mk(1, "flow", "warn"), mk(2, "index_level", "high", ["现在 7,180", "风险：VIX 31"]), mk(3, "congress", "info"),
+              mk(4, "plan_level", "high", ["你写的：降到 60%"])]
+    subject, body = notify.alert_mail(alerts)
+    assert subject == "【重要】title 2 · 另有 3 条"
+    assert body.index("■ 重要（2）") < body.index("1. title 2") < body.index("2. title 4") < body.index("■ 值得留意（1）") < body.index("■ 仅供参考（1）")
+    assert "   · 风险：VIX 31" in body and "   · first line" in body and "long analysis" not in body
+    assert "long analysis" in notify.alert_mail(alerts, details=True)[1]
+    from stockdesk import brief
+    line = brief.vix_line({"price": 31.7, "pct": 12.0})
+    assert "恐慌区" in line and "每天 ±2.0%" in line and "一个月 ±9%" in line and brief.vix_line(None) == ""
