@@ -9,6 +9,10 @@ from stockdesk.quant import keylevels as kl
 from conftest import make_bars
 
 
+def bars_of(close):
+    return make_bars(close, spread=0.002)
+
+
 def rising(n=320, start=100.0, step=0.1):
     return [start + step * i for i in range(n)]
 
@@ -179,3 +183,30 @@ def test_plan_alert_carries_a_full_write_up_without_holdings(env, monkeypatch):
     assert "相对大盘" in body and "标普 500" in body and body.rstrip().endswith("不会下单。")
     for word in ("市值", "盈亏", "占组合", "成本"):
         assert word not in body
+
+
+def test_named_levels_with_sources_and_the_cta_trend_estimate():
+    close = rising(320) + [128.0]                    # a long rise, then a drop under the close of 21 sessions earlier
+    st = kl.state("^GSPC", bars_of(close), user_levels=[{"level": 130, "name": "130 支撑", "source": "某报道 2026-11-20"}, 90, {"bad": 1}])
+    u = st.level("user130")
+    assert u is not None and u.name == "130 支撑" and u.source == "某报道 2026-11-20" and st.level("user90").name == "你设的关键位 90"
+    assert u in st.broken                             # crossed from above on the last bar
+    m21 = st.level("mom21")
+    assert m21 is not None and m21.value == close[-22] and "1 个月动量翻转价" in m21.name and m21 in st.broken
+    assert st.level("mom252") is not None and "mom252" not in [x.key for x in st.broken]
+    title, body = insight.index_alert(st, "down", st.broken, index_bars=bars_of(close))
+    assert "来源：某报道 2026-11-20" in body and "不公开" in body
+    assert insight.label(u) == "130 支撑"
+
+
+def test_scan_reports_a_crossed_key_level_with_its_source():
+    from stockdesk import flow
+    idx = pd.bdate_range("2026-06-01", periods=80)
+    calm = [7300 + 2 * (i % 2) for i in range(79)]
+    df = pd.DataFrame({"close": calm + [7190.0], "volume": [1000.0] * 80}, index=idx)
+    items, _ = flow.scan_futures({"^GSPC": df}, {"symbols": {"^GSPC": "标普 500 指数"}}, None,
+                                 {"^GSPC": [("7200 支撑", 7200.0, "某报道"), ("7625（CTA）", 7625.0, "")]})
+    assert len(items) == 1 and any("跌破关键位 7200 支撑" in f for f in items[0].facts)
+    assert any(d.startswith("关键位：") and "7625（CTA）" in d for d in items[0].detail) and any("某报道" in d for d in items[0].detail)
+    quiet = pd.DataFrame({"close": calm + [7301.0], "volume": [1000.0] * 80}, index=idx)
+    assert flow.scan_futures({"^GSPC": quiet}, {"symbols": {"^GSPC": "x"}}, None, {"^GSPC": [("7200", 7200.0, "")]})[0] == []

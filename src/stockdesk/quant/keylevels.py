@@ -7,7 +7,11 @@ is on the far side of it after having held the near side:
   low     close below the lowest close of the previous n sessions, the first such close in ``min_hold``
   dd      close ``d`` % or more below the highest close of the last 252 sessions, the first in ``min_hold``
   zone    close below a support zone (cluster of swing highs / lows of the past year, quant/levels.py)
-  user    close below a level the user wrote in the config
+  user    close below a level the user wrote in the config (optionally with a name and the source it came from)
+  mom     trend-model estimate: the n-session return turns negative, i.e. the close falls under the close of
+          n sessions earlier (n = 21 / 63 / 252, the one-, three- and twelve-month lookbacks of time-series
+          momentum). Banks' CTA "trigger levels" come from proprietary models and are not published; this is a
+          transparent public proxy for the same kind of signal, computed from closes only.
 and, mirrored, "reclaimed": close back above an average, a new 252-session closing high, or a close
 above a user level.
 
@@ -29,6 +33,7 @@ from . import indicators as ind
 from .levels import Zone, support_zones
 
 DEFAULTS: dict = {"ma": [50, 100, 200], "lows": [20, 60], "drawdowns": [10.0, 20.0], "high": 252, "min_hold": 10,
+                  "momentum": [21, 63, 252],
                   "zones": True, "zone_tol_atr": 0.5, "stats_years": 30, "horizons": [5, 10, 21, 63]}
 
 NAMES = {"^GSPC": L("标普 500", "S&P 500"), "^IXIC": L("纳斯达克综合指数", "Nasdaq Composite"),
@@ -55,6 +60,7 @@ class Level:
     n: float = 0                     # window (ma / low / high) or percentage (dd)
     held: int = 0                    # closes on the near side before the break (rule-based kinds)
     zone: Zone | None = None
+    source: str = ""                 # where a level the user entered comes from
 
 
 @dataclass
@@ -117,6 +123,8 @@ def _weight(kind: str, n: float) -> int:
         return 2 if n >= 60 else 1
     if kind == "dd":
         return 3 if n >= 20 else 2
+    if kind == "mom":
+        return 3 if n >= 252 else 2 if n >= 63 else 1
     return 3 if kind == "user" else 2
 
 
@@ -129,6 +137,9 @@ def _name(kind: str, n: float) -> str:
         return L("52 周收盘高点", "52-week closing high") if n == 252 else L(f"{n:g} 日收盘高点", f"{n:g}-day closing high")
     if kind == "dd":
         return L(f"回撤 {n:g}% 线", f"{n:g}% drawdown line")
+    if kind == "mom":
+        span = {21: L("1 个月", "1-month"), 63: L("3 个月", "3-month"), 252: L("12 个月", "12-month")}.get(int(n), L(f"{n:g} 日", f"{n:g}-session"))
+        return L(f"CTA 趋势估算（{span}动量翻转价）", f"CTA trend estimate ({span} momentum flip)")
     return ""
 
 
@@ -155,6 +166,11 @@ def series(c: pd.Series, kind: str, n: float, direction: str, min_hold: int = 10
         lvl = c.rolling(252, min_periods=120).max() * (1 - float(n) / 100.0)
         far = c <= lvl
         held = _run_before(~far & lvl.notna())
+    elif kind == "mom":
+        lvl = c.shift(int(n))
+        ok = lvl.notna()
+        far = ((c < lvl) if direction == "down" else (c > lvl)) & ok
+        held = _run_before(~far & ok)
     else:
         raise ValueError(kind)
     return far & (held >= int(min_hold)), lvl, held
@@ -183,7 +199,7 @@ def record(c: pd.Series, event: pd.Series, level: pd.Series, kind: str, directio
     for i in idx:
         if i + 5 < n:
             nxt = arr[i + 1:i + 6]
-            ref = lv[i + 1:i + 6] if kind == "ma" else np.full(5, lv[i])
+            ref = lv[i + 1:i + 6] if kind in ("ma", "mom") else np.full(5, lv[i])
             back.append(bool(((nxt > ref) if direction == "down" else (nxt < ref)).any()))
         if i + 21 < n:
             dips.append(float(arr[i + 1:i + 22].min() / arr[i] - 1))
@@ -260,6 +276,8 @@ def state(symbol: str, bars: pd.DataFrame, cfg: dict | None = None, *, name: str
         rule("high", int(p["high"]), ("up",))
     for d in p["drawdowns"]:
         rule("dd", float(d), ("down",))
+    for n in p["momentum"] or []:
+        rule("mom", int(n), ("down", "up"))
     if p["zones"]:
         try:
             zones = support_zones(full.iloc[:-1].tail(500), prev, tol_atr=float(p["zone_tol_atr"]))[:3]
@@ -275,11 +293,15 @@ def state(symbol: str, bars: pd.DataFrame, cfg: dict | None = None, *, name: str
             if px < z.low:
                 st.broken.append(lv)
     for raw in user_levels or ():
+        given, src = "", ""
+        if isinstance(raw, dict):
+            given, src = str(raw.get("name") or "").strip(), str(raw.get("source") or "").strip()
+            raw = raw.get("level")
         try:
             val = float(raw)
         except (TypeError, ValueError):
             continue
-        lv = Level(f"user{val:g}", "user", L(f"你设的关键位 {val:,.0f}", f"your level {val:,.0f}"), val, 3)
+        lv = Level(f"user{val:g}", "user", given or L(f"你设的关键位 {val:,.0f}", f"your level {val:,.0f}"), val, 3, source=src)
         st.levels.append(lv)
         if prev >= val > px:
             st.broken.append(lv)

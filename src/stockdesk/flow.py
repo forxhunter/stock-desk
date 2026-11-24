@@ -51,7 +51,7 @@ DEFAULTS: dict = {
                 "min_premium": 200000.0, "min_dte": 2, "min_oi": 100, "per_symbol": 2,
                 "extra_symbols": ["SPY", "QQQ"], "max_items": 20},
     "futures": {"enabled": True, "z": 2.0, "volume_mult": 1.8,
-                "symbols": {"ES=F": L("标普 500 期货", "S&P 500 futures"), "NQ=F": L("纳指 100 期货", "Nasdaq 100 futures"),
+                "symbols": {"^GSPC": L("标普 500 指数", "S&P 500 index"), "ES=F": L("标普 500 期货", "S&P 500 futures"), "NQ=F": L("纳指 100 期货", "Nasdaq 100 futures"),
                             "^VIX": L("VIX 波动率指数", "VIX volatility index"),
                             "ZN=F": L("10 年期美债期货", "10-year Treasury futures"),
                             "CL=F": L("原油期货", "Crude oil futures"), "GC=F": L("黄金期货", "Gold futures")}},
@@ -626,8 +626,10 @@ def _futures_detail(sym: str, c, last: float, z: float, thr: float, names: dict,
     return out
 
 
-def scan_futures(bars: dict, cfg: dict | None = None, now: float | None = None) -> tuple[list[FlowItem], list[str]]:
-    """``bars``: symbol -> daily OHLCV DataFrame."""
+def scan_futures(bars: dict, cfg: dict | None = None, now: float | None = None,
+                 levels: dict | None = None) -> tuple[list[FlowItem], list[str]]:
+    """``bars``: symbol -> daily OHLCV DataFrame. ``levels``: symbol -> [(name, price, source)] key levels to watch:
+    a level crossed between the previous close and the latest price is a finding of its own."""
     p = settings({"futures": cfg or {}})["futures"]
     names = dict(p["symbols"] or {})
     items: list[FlowItem] = []
@@ -658,6 +660,14 @@ def scan_futures(bars: dict, cfg: dict | None = None, now: float | None = None) 
                        f"{name} ({sym}) {float(c.iloc[-1]):,.2f}, {last:+.2f}% ({z:+.1f}σ)"
                        + (f", last session's volume was {vr:.1f}x its 20-day average" if vr else "")))
         facts, score = [], 0.0
+        prev, now_px = float(c.iloc[-2]), float(c.iloc[-1])
+        marks = sorted((levels or {}).get(sym) or [], key=lambda x: -x[1])
+        for lname, lvl, _src in marks:
+            if prev >= lvl > now_px or prev <= lvl < now_px:
+                down = now_px < lvl
+                score += 2
+                facts.append(L(f"{'跌破' if down else '站上'}关键位 {lname}：上一收盘 {prev:,.2f} → 现在 {now_px:,.2f}",
+                               f"{'Fell through' if down else 'Rose through'} the key level {lname}: previous close {prev:,.2f} → now {now_px:,.2f}"))
         if abs(z) >= float(p["z"]):
             score += 2 + (1 if abs(z) >= 3 else 0)
             facts.append(L(f"单日 {last:+.2f}%，相当于近 60 个交易日波动的 {z:+.1f} 倍标准差（门槛 {float(p['z']):g}）",
@@ -681,6 +691,13 @@ def scan_futures(bars: dict, cfg: dict | None = None, now: float | None = None) 
                      "intraday figure is an unfinished day, so confirm after the close.")]
         day = f"{df.index[-1]:%Y%m%d}" if hasattr(df.index[-1], "strftime") else str(df.index[-1])
         detail = _futures_detail(sym, c, last, z, float(p["z"]), names, board)
+        if marks:
+            detail.insert(0, L("关键位：", "Key levels: ") + L("；", "; ").join(
+                L(f"{n_} {lv_:,.0f}（距现价 {(lv_ / now_px - 1) * 100:+.1f}%）", f"{n_} {lv_:,.0f} ({(lv_ / now_px - 1) * 100:+.1f}% from the price)")
+                for n_, lv_, _ in marks[:8]))
+            srcs = [f"{n_}: {s_}" for n_, _, s_ in marks if s_]
+            if srcs:
+                detail.append(L("这些价位的出处：", "Where these levels come from: ") + L("；", "; ").join(srcs))
         items.append(FlowItem("futures", f"fut:{sym}:{day}", L(f"{name}（{sym}）", f"{name} ({sym})"), f"https://finance.yahoo.com/quote/{quote(sym)}",
                               round(score, 2), _severity(score), "macro", [], L(f"{float(c.iloc[-1]):,.2f}，{last:+.2f}%（{z:+.1f}σ）", f"{float(c.iloc[-1]):,.2f}, {last:+.2f}% ({z:+.1f}σ)"),
                               facts, reading, 0.0, now or time.time(), detail))

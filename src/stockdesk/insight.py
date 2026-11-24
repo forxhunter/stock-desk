@@ -81,7 +81,9 @@ def _the(lv: kl.Level) -> str:
 
 def label(lv: kl.Level) -> str:
     """A level with its value (zones and user levels already carry the numbers in their name)."""
-    return lv.name if lv.kind in ("zone", "user") else f"{lv.name} {num(lv.value)}"
+    if lv.kind == "user":
+        return lv.name if num(lv.value) in lv.name or f"{lv.value:g}" in lv.name else f"{lv.name} {num(lv.value)}"
+    return lv.name if lv.kind == "zone" else f"{lv.name} {num(lv.value)}"
 
 
 def _the_label(lv: kl.Level) -> str:
@@ -94,6 +96,12 @@ def _rule(lv: kl.Level, direction: str, hold: int) -> str:
                   f"a close below the {lv.n:g}-day average after at least {hold} closes above it") if direction == "down"
                 else L(f"收盘站上 {lv.n:g} 日均线、且此前至少 {hold} 个交易日收在下方",
                        f"a close above the {lv.n:g}-day average after at least {hold} closes below it"))
+    if lv.kind == "mom":
+        return (L(f"收盘跌破 {lv.n:g} 个交易日前的收盘价（{lv.n:g} 日涨跌转负）、且此前至少 {hold} 个交易日为正",
+                  f"a close under the close of {lv.n:g} sessions earlier (the {lv.n:g}-session return turning negative) after at least {hold} positive sessions")
+                if direction == "down" else
+                L(f"收盘站上 {lv.n:g} 个交易日前的收盘价（{lv.n:g} 日涨跌转正）、且此前至少 {hold} 个交易日为负",
+                  f"a close above the close of {lv.n:g} sessions earlier (the {lv.n:g}-session return turning positive) after at least {hold} negative sessions"))
     if lv.kind == "low":
         return L(f"收盘创 {lv.n:g} 日新低、且此前至少 {hold} 个交易日没有创过",
                  f"a new {lv.n:g}-day closing low, the first in at least {hold} sessions")
@@ -119,6 +127,12 @@ def _event_line(lv: kl.Level, st: kl.IndexState, direction: str) -> str:
         return base + L(f"（52 周收盘高点 {num(st.ind['high252'])} 的 {100 - lv.n:g}%；习惯上把从高点回落 10% 叫“回调”，20% 叫“熊市”）",
                         f" ({100 - lv.n:g}% of the 52-week closing high {num(st.ind['high252'])}; by convention a 10% fall "
                         "from the high is called a correction and 20% a bear market)")
+    if lv.kind == "mom":
+        return base + L(f"（{lv.n:g} 个交易日前的收盘价；趋势跟踪类模型常用的动量翻转点之一，银行的 CTA 触发价是各自的模型估算，不公开，这里是按公开收盘价计算的近似）",
+                        f" (the close of {lv.n:g} sessions earlier, one of the momentum flips trend-following models use; banks' CTA triggers come from their own "
+                        "unpublished models, this is an approximation from public closes)")
+    if lv.kind == "user" and lv.source:
+        return base + L(f"（来源：{lv.source}）", f" (source: {lv.source})")
     if lv.kind == "zone" and lv.zone is not None:
         return base + L(f"（整个区间都已失守；它由过去一年的 {lv.zone.touches} 个波段高低点聚成，最近一个在 {lv.zone.last:%m-%d}）",
                         f" (the whole zone is lost; it is a cluster of {lv.zone.touches} swing high(s) / low(s) of the past year, "

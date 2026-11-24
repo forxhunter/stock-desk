@@ -442,6 +442,24 @@ class Engine:
                 log.info("option chain unavailable for %s: %s", sym, type(e).__name__)
         return out
 
+    def _scan_levels(self) -> dict:
+        """Key levels for the indices in the scan: the user's own (with name and source) and the CTA trend estimates."""
+        out: dict[str, list] = {}
+        for sym, rows in (self._index_cfg().get("levels") or {}).items():
+            for r in rows or []:
+                if isinstance(r, dict) and r.get("level") is not None:
+                    out.setdefault(sym, []).append((str(r.get("name") or f"{float(r['level']):,.0f}"), float(r["level"]), str(r.get("source") or "")))
+                else:
+                    try:
+                        out.setdefault(sym, []).append((f"{float(r):,.0f}", float(r), ""))
+                    except (TypeError, ValueError):
+                        pass
+        for sym, st in (self.snapshot.indices or {}).items():
+            for lv in st.levels:
+                if lv.kind == "mom":
+                    out.setdefault(sym, []).append((lv.name, lv.value, ""))
+        return out
+
     def _option_spot(self, symbols: list[str]) -> dict[str, dict]:
         """What is known about each stock behind an option chain: price, realised volatility, 52-week range."""
         out = {}
@@ -492,7 +510,7 @@ class Engine:
         if s["futures"].get("enabled", True):
             try:
                 bars = self.market.history(list(s["futures"]["symbols"]), "2y")
-                parts["futures"] = flow.scan_futures(bars, s["futures"], now)
+                parts["futures"] = flow.scan_futures(bars, s["futures"], now, self._scan_levels())
             except Exception as e:
                 rep.errors.append(L(f"期货：{type(e).__name__}", f"Futures: {type(e).__name__}"))
                 log.exception("futures scan failed")
