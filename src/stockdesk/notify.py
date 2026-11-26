@@ -30,7 +30,7 @@ def settings(cfg: dict | None) -> dict:
     return {"enabled": bool(c.get("enabled")), "to": str(c.get("to") or "").strip(),
             "host": str(c.get("smtp_host") or "").strip(), "port": int(c.get("smtp_port") or 587),
             "user": str(c.get("username") or "").strip(),
-            "kinds": list(c.get("kinds") or ["bottoming", "plan_level", "flow", "index_level", "congress", "range"])}
+            "kinds": list(c.get("kinds") or ["bottoming", "plan_level", "flow", "index_level", "congress", "range", "rates"])}
 
 
 def ready(s: dict) -> str | None:
@@ -68,7 +68,7 @@ def send(s: dict, subject: str, body: str, smtp_factory=None, secret: str | None
 
 
 GROUPS = (("high", L("重要", "Important")), ("warn", L("值得留意", "Worth a look")), ("info", L("仅供参考", "For reference")))
-ORDER = {"index_level": 0, "plan_level": 1, "bottoming": 2, "range": 3, "congress": 4, "flow": 5}
+ORDER = {"index_level": 0, "plan_level": 1, "rates": 2, "bottoming": 3, "range": 4, "congress": 5, "flow": 6}
 
 
 def _short(a) -> list[str]:

@@ -69,7 +69,7 @@ notify:
     smtp_port: 587              # 587 = STARTTLS，465 = SSL
     username: ""
     details: false              # true = 邮件末尾附上每条提醒的完整分析；默认只发按重要程度排好的简报
-    kinds: [bottoming, plan_level, flow, index_level, congress, range]   # 哪些提醒发邮件：筑底信号、到达你在计划里写的价位、异动扫描（只发高级别）、大盘关键位破位、议员交易、震荡区间上下沿
+    kinds: [bottoming, plan_level, flow, index_level, congress, range, rates]   # 哪些提醒发邮件：筑底信号、到达你在计划里写的价位、异动扫描（只发高级别）、大盘关键位破位、议员交易、震荡区间上下沿
 
 briefing:                       # 每日简报（分析中心第一页）
   cooloff_days: 5               # 卖出后多少个交易日内算“冷静期”
@@ -218,6 +218,13 @@ remote:
   dir: stock-desk               # 对方主目录下的文件夹
   auto_sync: true
 
+# 美债收益率与拍卖（美国财政部公开数据；尾差为估算，见 src/stockdesk/treasury.py 顶部）
+rates:
+  enabled: true
+  scan_minutes: 60
+  move_bp: 10                   # 10 年或 30 年收益率单日变动超过这么多个基点时提醒
+  alert_normal: false           # true = “一般”的拍卖也提醒；默认只提醒疲弱 / 强劲的
+
 # 大盘预案（分析中心 → 预案）：每一档回撤的点位、历史上到过这一档之后的情况、按持仓 β 测算的影响。
 # “到了这一档做什么”写在 data/playbook.yaml 里，由你自己写；程序只在条件到达时把你写的话原样提醒你。
 playbook:
@@ -254,6 +261,7 @@ flow:
   max_alerts: 5                 # 每轮最多提醒几条
   email_min_severity: high      # 发邮件的最低级别（high / warn）；屏幕提醒不受这条限制
   max_emails_per_day: 6         # 异动邮件每天最多几条
+  polymarket_per_day: 3         # Polymarket 每天最多提醒几条（取分数最高的）
   polymarket:
     enabled: true
     min_usd: 10000              # 只看单笔不小于这个金额的成交
@@ -267,7 +275,7 @@ flow:
     extreme_price: 0.95         # 成交价高于它的买单视为“吃到期收益”，不计入判断
     exclude_tags: [Sports, Esports]
     exclude_titles: ["Up or Down"]
-    show_other: true            # 也列出和自选、宏观都无关的市场
+    show_other: false           # 和自选、经济 / 利率 / 科技都无关的市场（体育、选举、加密币价格等）不显示
   options:
     enabled: true
     interval_minutes: 30

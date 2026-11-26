@@ -11,7 +11,7 @@ from typing import Callable
 
 import pandas as pd
 
-from . import brief, briefing, congress, credentials, flow, insight, notify, paths, plans, playbook
+from . import brief, briefing, congress, credentials, depth, flow, insight, notify, paths, plans, playbook, treasury
 from .adapters import congress as congress_src
 from .adapters.base import AdapterError, AdapterUnavailable, BrokerAdapter, RateLimited
 from .adapters.ibkr_cp import IbkrClientPortalAdapter
@@ -108,6 +108,8 @@ class Snapshot:
     vix: dict | None = None                                       # {price, chg, pct}
     congress: congress.CongressReport | None = None               # trades disclosed by members of Congress
     playbook: playbook.Playbook | None = None                     # drawdown rungs, their record, the user's own actions
+    rates: dict | None = None                                     # Treasury yields and recent auctions
+    depth: dict | None = None                                     # S&P depth from free data (activity, spread, option walls)
 
     def get(self, symbol: str) -> TickerView | None:
         return next((t for t in self.tickers if t.symbol == symbol), None)
@@ -145,6 +147,8 @@ class Engine:
         self._cg: congress.CongressReport | None = None
         self._sf_cache: dict[tuple, tuple] = {}            # (symbol, last bar, bars, last close) -> (pattern, its record)
         self._studies: dict[str, tuple] = {}              # symbol -> (key, drawdown study of the index)
+        self._rates: dict | None = self.store.get_meta("rates:report", None)
+        self._depth: dict | None = self.store.get_meta("depth:spx", None)
         self._book: dict = {}                             # the user's playbook file
         self._books: dict[str, playbook.IndexBook] = {}
         self._cg_bars: dict[str, pd.DataFrame] = {}       # price history of the stocks members traded
@@ -183,7 +187,7 @@ class Engine:
         adapters = self._adapters()
         active = {a.name for a in adapters}
         for name in list(self._status):
-            if name not in active and name not in ("yahoo", "semianalysis", "polymarket", "email", "flow", "congress", "remote"):
+            if name not in active and name not in ("yahoo", "semianalysis", "polymarket", "email", "flow", "congress", "remote", "rates"):
                 self._status.pop(name, None)
                 self._broker.pop(name, None)
         if not force and time.time() - self._broker_at < float(self.cfg.get("sources.broker_refresh_seconds", 300)):
@@ -563,6 +567,14 @@ class Engine:
                 try:
                     syms = [x for x in self.watchlist.symbols() if x.isalpha()]
                     syms += [x for x in s["options"]["extra_symbols"] if x not in syms]
+                    try:
+                        spx = self.snapshot.indices.get("^GSPC").price if self.snapshot.indices.get("^GSPC") else None
+                        d = depth.fetch(spx)
+                        if d:
+                            self._depth = {**d, "ts": now}
+                            self.store.set_meta("depth:spx", self._depth)
+                    except Exception:
+                        log.exception("depth failed")
                     chains = self._option_chains(syms, int(s["options"]["expiries"]))
                     parts["options"] = flow.scan_options(chains, s["options"], set(self.watchlist.symbols()), now,
                                                          self._option_spot(list(chains)))
@@ -580,6 +592,66 @@ class Engine:
         self.store.set_meta("flow:report", rep.to_dict())
         self.store.set_meta("flow:at", now)
         return rep
+
+    # ------------------------------------------------------------------ Treasury yields and auctions
+    def rates_due(self) -> bool:
+        if not self.cfg.get("rates.enabled", True):
+            return False
+        age = self.store.meta_age("rates:at")
+        return age is None or age > float(self.cfg.get("rates.scan_minutes", 60)) * 60
+
+    def scan_rates(self, getter=None) -> dict | None:
+        """The Treasury's daily par curve and auction results (official public data)."""
+        kw = {"getter": getter} if getter is not None else {}
+        try:
+            y = time.localtime().tm_year
+            curve = treasury.fetch_curve(y - 1, **kw) + treasury.fetch_curve(y, **kw)
+            auctions = treasury.assess(treasury.parse(treasury.fetch_auctions(**kw, size=80)), curve)
+            rep = {"ts": time.time(), "summary": treasury.curve_summary(curve), "auctions": [a.to_dict() for a in auctions[-12:]]}
+            self._rates = rep
+            self.store.set_meta("rates:report", rep)
+            self._status["rates"] = ("ok", L(f"美债数据：正常（收益率曲线到 {rep['summary']['date'] if rep['summary'] else '—'}，最近拍卖 {auctions[-1].date if auctions else '—'}）",
+                                             f"Treasury data: OK (curve to {rep['summary']['date'] if rep['summary'] else '—'}, latest auction {auctions[-1].date if auctions else '—'})"))
+        except AdapterError as e:
+            self._status["rates"] = ("off", L(f"美债数据：{e}（显示上次结果）", f"Treasury data: {e} (showing the last result)"))
+        except Exception as e:
+            self._status["rates"] = ("error", L(f"美债数据：内部错误 {type(e).__name__}", f"Treasury data: internal error {type(e).__name__}"))
+            log.exception("rates failed")
+        self.store.set_meta("rates:at", time.time())
+        return self._rates
+
+    def _rates_alerts(self, snap: Snapshot) -> list[Alert]:
+        rep = self._rates
+        if not rep or not self.cfg.get("rates.enabled", True):
+            return []
+        out: list[Alert] = []
+        cut = time.strftime("%Y-%m-%d", time.localtime(time.time() - 4 * 86400))
+        for d in rep.get("auctions") or []:
+            if d.get("date", "") < cut or d.get("verdict") == "normal" and not self.cfg.get("rates.alert_normal", False):
+                continue
+            a = treasury.Auction(**d)
+            lines = treasury.auction_lines(a)
+            title = L(f"美债拍卖{treasury.VERDICT[a.verdict]}：{a.term} 收益率 {a.high:.3f}%，倍数 {a.btc:.2f}",
+                      f"Treasury auction {treasury.VERDICT[a.verdict]}: {a.term} at {a.high:.3f}%, bid-to-cover {a.btc:.2f}")
+            body = "\n".join(lines + ([L("判断依据：", "Basis: ") + L("；", "; ").join(a.reasons)] if a.reasons else [])
+                             + [treasury.curve_line(rep.get("summary")),
+                                L("数据来自美国财政部（TreasuryDirect 拍卖结果、每日收益率曲线）。尾差为估算，见 treasury.py 顶部说明。不是预测，也不是买卖建议。",
+                                  "Data from the US Treasury (TreasuryDirect auction results, daily par curve). The tail is an estimate, see the top of treasury.py. "
+                                  "Not a prediction and not a recommendation.")])
+            out.append(Alert(f"rates:auction:{a.cusip}:{a.date}", "rates", "", "warn" if a.verdict != "normal" else "info", title, body,
+                             {"brief": lines[1:] + ([treasury.curve_line(rep.get("summary"))] if rep.get("summary") else [])}))
+        s = rep.get("summary") or {}
+        big = [k for k in ("10 Yr", "30 Yr") if abs(s.get(k + " chg") or 0) >= float(self.cfg.get("rates.move_bp", 10))]
+        if big:
+            k = big[0]
+            title = L(f"美债 {k.replace(' Yr', ' 年')}期收益率单日 {s[k + ' chg']:+.0f}bp 到 {s[k]:.2f}%",
+                      f"{k.replace(' Yr', '-year')} Treasury yield {s[k + ' chg']:+.0f}bp in a day to {s[k]:.2f}%")
+            up = s[k + " chg"] > 0
+            mean = (L("长端利率急升，通常压制高估值股票（成长 / 科技）的估值", "A sharp rise in long rates usually weighs on highly valued (growth / tech) stocks")
+                    if up else L("长端利率急降，多见于避险或增长担忧", "A sharp fall in long rates is usually flight to safety or growth worries"))
+            out.append(Alert(f"rates:move:{k}:{s['date']}", "rates", "", "warn", title,
+                             treasury.curve_line(s) + "\n" + mean, {"brief": [treasury.curve_line(s), L("意味着：", "What it means: ") + mean]}))
+        return out
 
     # ------------------------------------------------------------------ trades disclosed by members of Congress
     def congress_due(self) -> bool:
@@ -765,7 +837,21 @@ class Engine:
             return []
         out = []
         snap = self._building
-        for i in flow.alert_items(self._flow, self.cfg.get("flow", {}) or {}):
+        cap = int(self.cfg.get("flow.polymarket_per_day", 3))
+        day = time.strftime("%Y%m%d")
+        seen = self.store.get_meta("flow:pm_day", {}) or {}
+        today = list(seen.get(day, []))
+        picks = []
+        for i in sorted(flow.alert_items(self._flow, self.cfg.get("flow", {}) or {}), key=lambda i: -i.score):
+            if i.source == "polymarket":
+                if i.key not in today:
+                    if len(today) >= cap:
+                        continue
+                    today.append(i.key)
+            picks.append(i)
+        if today != seen.get(day, []):
+            self.store.set_meta("flow:pm_day", {day: today})
+        for i in picks:
             extra = []
             if snap is not None and (i.tickers or i.source in ("options", "futures")):
                 main = next(iter(snap.indices), None)
@@ -903,10 +989,13 @@ class Engine:
         self._building = snap
         try:
             self._extra_alerts = (self._index_alerts(snap) + self._bottoming(snap) + self._plan_alerts(snap)
-                                  + self._range_alerts(snap) + self._flow_alerts() + self._congress_alerts(snap))
+                                  + self._range_alerts(snap) + self._flow_alerts() + self._congress_alerts(snap)
+                                  + self._rates_alerts(snap))
         finally:
             self._building = None
         self._playbook(snap)
+        snap.rates = self._rates if self.cfg.get("rates.enabled", True) else None
+        snap.depth = self._depth
         snap.flow = self._flow if self.cfg.get("flow.enabled", True) else None
         snap.congress = self._cg if self.cfg.get("congress.enabled", True) else None
         self._behaviour(snap, positions, prices)
@@ -1394,7 +1483,7 @@ class Engine:
                     title, body = insight.index_alert(now, direction, hits, others=snap.indices, vix=snap.vix,
                                                       views=snap.tickers, index_bars=bars, hold=hold, playbook=mine)
                     said = next((x.split("：", 1)[-1].split(": ", 1)[-1] for x in mine if "你在预案里写的是" in x or "your playbook says" in x), "")
-                    short = brief.index_down(now, direction, hits, snap.vix, said)
+                    short = brief.index_down(now, direction, hits, snap.vix, said, depth.line(self._depth) if sym == "^GSPC" else "")
                 except Exception:
                     log.exception("index write-up failed for %s", sym)
                     continue

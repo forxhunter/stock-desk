@@ -35,7 +35,7 @@ _MEANING = {
 }
 
 
-def index_down(st, direction: str, hits: list, vix: dict | None, plan_text: str = "") -> list[str]:
+def index_down(st, direction: str, hits: list, vix: dict | None, plan_text: str = "", depth_text: str = "") -> list[str]:
     top = hits[0]
     down = direction == "down"
     i = st.ind
@@ -59,6 +59,8 @@ def index_down(st, direction: str, hits: list, vix: dict | None, plan_text: str 
         risk = f"{risk}\n{risk_hist}" if risk else risk_hist
     if risk:
         out += [L("风险：", "Risk: ") + x for x in risk.split("\n")]
+    if depth_text:
+        out.append(depth_text)
     cur = st.level(top.key)
     ref = cur.value if cur is not None else top.value
     if down:
@@ -162,9 +164,21 @@ def day_points(snap) -> list[str]:
         out.append(line)
     if vix_line(snap.vix):
         out.append(vix_line(snap.vix))
+    from . import depth as _depth
+    if _depth.line(getattr(snap, "depth", None)):
+        out.append(_depth.line(snap.depth))
+    rates = getattr(snap, "rates", None) or {}
+    from . import treasury
+    if rates.get("summary"):
+        out.append(treasury.curve_line(rates["summary"]))
+    last = (rates.get("auctions") or [])[-1:]
+    if last:
+        a = last[0]
+        out.append(L(f"最近一次国债拍卖：{a['term']} {a['date'][5:]}，倍数 {a.get('btc') or 0:.2f}，{treasury.VERDICT.get(a.get('verdict'), '')}",
+                     f"Latest Treasury auction: {a['term']} {a['date'][5:]}, bid-to-cover {a.get('btc') or 0:.2f}, {treasury.VERDICT.get(a.get('verdict'), '')}"))
     import time as _t
     hot = [a for a in snap.alerts if a.severity in ("high", "warn") and not a.demo and a.created >= _t.time() - 86400
-           and a.kind in ("index_level", "plan_level", "bottoming", "range", "congress", "flow")]
+           and a.kind in ("index_level", "plan_level", "rates", "bottoming", "range", "congress", "flow")]
     hot.sort(key=lambda a: (0 if a.severity == "high" else 1, a.kind != "index_level"))
     for a in hot[:3]:
         out.append(L(f"{'重要' if a.severity == 'high' else '留意'}：{a.title}", f"{'Important' if a.severity == 'high' else 'Note'}: {a.title}"))

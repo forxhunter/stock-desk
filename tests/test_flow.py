@@ -2,6 +2,8 @@ import pandas as pd
 
 from stockdesk import flow
 
+from test_engine_misc import env  # noqa: F401  (fixture)
+
 NOW = 1_800_000_000.0
 
 
@@ -73,7 +75,9 @@ def test_jump_sports_and_closed_markets():
 
 def test_tiers_and_alert_selection():
     macro, _ = scan([trade(80000, title="Fed cuts rates in December?")], event(tags=("Fed",)))
-    other, _ = scan([trade(80000, title="Who wins the song contest?")], event(tags=("Culture",)))
+    assert scan([trade(80000, title="Who wins the song contest?")], event(tags=("Culture",)))[0] == []     # unrelated: not shown
+    assert scan([trade(80000, title="Bitcoin above 100k?")], event(tags=("Crypto",)))[0] == []
+    other, _ = scan([trade(80000, title="Who wins the song contest?")], event(tags=("Culture",)), show_other=True)
     assert macro[0].tier == "macro" and other[0].tier == "other"
     rep = flow.FlowReport(ts=NOW, items=macro + other)
     assert [i.tier for i in flow.alert_items(rep)] == ["macro"]
@@ -188,3 +192,15 @@ def test_futures_details_levels_other_contracts_and_pattern():
     assert "同一时间的其它品种" in d and "纳指 100 期货" in d and "VIX 波动率指数 +" in d
     assert "典型的避险组合" in d
     assert "同方向超过 2σ 的单日变动出现过 1 次" in d and "之后 5 日涨跌的中位数" in d
+
+
+def test_polymarket_alerts_are_capped_per_day(env):
+    import time as _t
+    eng, market, store, _ = env
+    mk = lambda n, score: flow.FlowItem("polymarket", f"pm{n}", f"m{n}", severity="high", tier="macro", score=score, headline="h", ts=_t.time())
+    eng._flow = flow.FlowReport(ts=_t.time(), items=[mk(n, 10 - n) for n in range(6)])
+    eng.cfg.set("flow.max_alerts", 10)
+    ids = sorted(a.id for a in eng.refresh(force=True).alerts if a.kind == "flow")
+    assert ids == ["flow:pm0", "flow:pm1", "flow:pm2"]                     # the three highest scores
+    eng._flow = flow.FlowReport(ts=_t.time(), items=[mk(9, 50)] + [mk(n, 10 - n) for n in range(3)])
+    assert sorted(a.id for a in eng.build_snapshot().alerts if a.kind == "flow") == ids     # the day's three stay; no fourth

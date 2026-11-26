@@ -214,7 +214,7 @@ class HubWindow(QWidget):
         self._keep_scroll(self.alerts, render.private_html(L("行为提醒", "behaviour alerts")) if T.PRIVATE else
                           render.alerts_html(snap.alerts, snap, float(self.cfg.get("behavior.snooze_days", 7))))
         self._keep_scroll(self.research, render.research_html(snap.news, snap.odds))
-        self._keep_scroll(self.flow, render.flow_html(snap.flow, self.pal))
+        self._keep_scroll(self.flow, render.flow_html(snap.flow, self.pal, snap.rates))
         hot = sum(1 for i in snap.flow.items if i.severity != "info") if snap.flow else 0
         self.tabs.setTabText(TABS.index("flow"), L(f"异动扫描（{hot}）", f"Unusual-activity scan ({hot})") if hot else L("异动扫描", "Unusual-activity scan"))
         self._keep_scroll(self.congress, render.congress_html(snap.congress, self.pal, {v.symbol for v in snap.tickers}))

@@ -224,16 +224,44 @@ def research_html(news: list[NewsItem], odds: list[MarketOdds], compact: bool = 
 
 # ---- unusual-activity scan ---------------------------------------------------------------------
 
-def flow_html(rep, pal: T.Palette) -> str:
+def rates_html(rates) -> str:
+    from .. import treasury
+    if not rates:
+        return ""
+    out = [_h(L("美债收益率与拍卖", "Treasury yields and auctions"), L("美国财政部公开数据 · 尾差为估算", "US Treasury public data · the tail is an estimate"))]
+    if rates.get("summary"):
+        out.append(f'<p style="margin:4px 0 6px 10px;">{esc(treasury.curve_line(rates["summary"]))}</p>')
+    head = "".join(f"<th {_TH} align='{'left' if n < 2 else 'right'}'>{x}</th>" for n, x in enumerate(
+        (L("拍卖日", "Date"), L("期限", "Term"), L("中标收益率", "High yield"), L("倍数", "Bid-to-cover"), L("间接", "Indirect"),
+         L("直接", "Direct"), L("一级交易商", "Dealers"), L("尾差估算", "Tail est."), L("结论", "Reading"))))
+    rows = []
+    col = {"weak": T.RED, "strong": T.GREEN, "normal": T.SUB}
+    pc = lambda x: "—" if x is None else f"{x * 100:.1f}%"
+    for d in reversed((rates.get("auctions") or [])[-10:]):
+        rows.append(f"<tr><td {_TD}>{esc(d['date'][5:])}</td><td {_TD}>{esc(d['term'])}{L('（续）', ' (re)') if d.get('reopening') else ''}</td>"
+                    f"<td {_TD} align='right'>{d['high']:.3f}%</td><td {_TD} align='right'>{'—' if d.get('btc') is None else f'{d[chr(98) + chr(116) + chr(99)]:.2f}'}</td>"
+                    f"<td {_TD} align='right'>{pc(d.get('indirect'))}</td><td {_TD} align='right'>{pc(d.get('direct'))}</td><td {_TD} align='right'>{pc(d.get('dealer'))}</td>"
+                    f"<td {_TD} align='right'>{'—' if d.get('tail') is None else f'{d[chr(116) + chr(97) + chr(105) + chr(108)]:+.1f}bp'}</td>"
+                    f"<td {_TD} align='right'>{_span(treasury.VERDICT.get(d.get('verdict'), ''), col.get(d.get('verdict'), T.SUB))}</td></tr>")
+    out.append(f'<table cellspacing="0" width="100%"><tr>{head}</tr>{"".join(rows)}</table>')
+    out.append(_note(L("倍数 = 投标总额 / 发行额。间接投标人多为通过交易商投标的海外和国内机构，直接投标人是直接向财政部投标的机构，一级交易商承接的是别人没买走的部分（占比高 = 需求弱）。"
+                       "尾差估算 = 中标收益率与当日同期限曲线收益率的差，再减去这个差在近 6 次的平均；正数表示要多给收益率才卖得出去。",
+                       "Bid-to-cover = bids / amount sold. Indirect bidders are mostly foreign and domestic institutions bidding through dealers; direct bidders bid with the "
+                       "Treasury directly; primary dealers take what others did not (a high share = weak demand). Tail estimate = the gap between the high yield and the "
+                       "day's curve yield for the term, minus that gap's average over the last 6 auctions; positive means it took a higher yield to sell.")))
+    return "".join(out)
+
+
+def flow_html(rep, pal: T.Palette, rates=None) -> str:
     from ..flow import TIER_LABEL
     out = [_note(L("按固定规则筛出的<b>异常成交</b>：Polymarket 大额下注、期权放量、期货大幅波动。每条都写明触发了哪条规则和具体数字，"
                    "“怎么看”是核对思路，不是预测，也不是买卖建议。程序只读公开数据，不能下注或下单。",
                    "<b>Unusual trading</b> picked out by fixed rules: large Polymarket bets, option volume spikes, big futures moves. Each item states which rule fired and the actual numbers; "
                    "\"How to read it\" is a way to check things, not a prediction and not a buy / sell recommendation. The program only reads public data and cannot bet or place orders."), T.AMBER)]
     if rep is None:
-        return "".join(out) + _note(L("异动扫描已关闭（data/config.yaml 里 flow.enabled）。", "The unusual-activity scan is off (flow.enabled in data/config.yaml)."))
+        return "".join(out) + _note(L("异动扫描已关闭（data/config.yaml 里 flow.enabled）。", "The unusual-activity scan is off (flow.enabled in data/config.yaml).")) + rates_html(rates)
     if not rep.ts:
-        return "".join(out) + _note(L("还没有扫描结果，第一次扫描会在启动后一两分钟内完成。", "No scan results yet; the first scan finishes within a minute or two of starting."))
+        return "".join(out) + _note(L("还没有扫描结果，第一次扫描会在启动后一两分钟内完成。", "No scan results yet; the first scan finishes within a minute or two of starting.")) + rates_html(rates)
     out.append(_note(L(f"上次扫描 {datetime.fromtimestamp(rep.ts):%m-%d %H:%M}，每 10 分钟自动扫一次（期权每 30 分钟）。",
                        f"Last scan {datetime.fromtimestamp(rep.ts):%m-%d %H:%M}; it scans automatically every 10 minutes (options every 30 minutes).")
                      + (L("　出错：", "  Errors: ") + esc(L("；", "; ").join(rep.errors)) if rep.errors else "")))
@@ -262,6 +290,7 @@ def flow_html(rep, pal: T.Palette) -> str:
                                f'{L("怎么看：", "How to read it: ") if n == 0 else L("　　　　", "")}{esc(r)}</p>' for n, r in enumerate(i.reading)))
         for text in notes.get(key, []):
             out.append(_note(esc(text)))
+    out.append(rates_html(rates))
     out.append(_note(L("门槛都可以在 data/config.yaml 的 flow 一节里改（big_usd、wallet_usd、vol_oi、z 等）。"
                        "大单、放量和大波动经常出现而后续什么也没发生；把它们当作“值得看一眼”的线索，而不是结论。",
                        "All thresholds can be changed in the flow section of data/config.yaml (big_usd, wallet_usd, vol_oi, z, etc.). "

@@ -63,6 +63,7 @@ def env(tmp_path, monkeypatch):
     cfg.set("research.semianalysis.enabled", False)
     cfg.set("research.polymarket.enabled", False)
     cfg.set("congress.enabled", False)            # no network in tests; tests/test_congress.py feeds it fixtures
+    cfg.set("rates.enabled", False)               # no network in tests; tests/test_rates.py feeds it fixtures
     market = FakeMarket(["AAA", "BBB", "CCC", "SPY"])
     store = Store(tmp_path / "data" / "t.sqlite")
     eng = Engine(cfg, store, Watchlist(wl_path, tmp_path / "none.yaml"), market)
@@ -434,7 +435,7 @@ def test_notify_send_uses_only_the_configured_account(monkeypatch):
                             ("send", "me@example.com", "bot@example.com", "标题")]
     with pytest.raises(notify.NotifyError):
         notify.send(notify.settings({"enabled": True}), "x", "y", smtp_factory=FakeSMTP, secret="z")
-    assert notify.settings({})["enabled"] is False and notify.settings({})["kinds"] == ["bottoming", "plan_level", "flow", "index_level", "congress", "range"]
+    assert notify.settings({})["enabled"] is False and notify.settings({})["kinds"] == ["bottoming", "plan_level", "flow", "index_level", "congress", "range", "rates"]
 
 
 def test_build_plan_levels_raise_alerts(env, monkeypatch, tmp_path):
@@ -557,3 +558,14 @@ def test_alert_mail_groups_by_importance_and_keeps_it_short():
     from stockdesk import brief
     line = brief.vix_line({"price": 31.7, "pct": 12.0})
     assert "恐慌区" in line and "每天 ±2.0%" in line and "一个月 ±9%" in line and brief.vix_line(None) == ""
+
+
+def test_depth_walls_and_line():
+    from stockdesk import depth
+    calls = pd.DataFrame({"strike": [720.0, 750.0, 775.0, 900.0], "openInterest": [10.0, 900.0, 500.0, 99999.0]})
+    puts = pd.DataFrame({"strike": [700.0, 680.0, 500.0], "openInterest": [800.0, 300.0, 99999.0]})
+    w = depth.option_walls(calls, puts, 716.7)
+    assert w == {"call": (750.0, 900.0), "put": (700.0, 800.0)}                 # far strikes are outside the band
+    text = depth.line({"activity": (72e6, 48e6, 1.5), "book": (716.4, 3440, 716.8, 40), "walls": {"put": (700.0, 7016.0, 185e3), "call": (750.0, 7517.0, 104e3)}})
+    assert "为平均的 1.5 倍（活跃）" in text and "买卖价差 0.40 美元" in text and "≈7,016 点" in text and "≈7,517 点" in text
+    assert depth.line(None) == "" and depth.line({}) == ""

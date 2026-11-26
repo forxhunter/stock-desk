@@ -22,7 +22,7 @@ from .briefing import RANGE_TEXT
 from .engine import Engine, Snapshot
 
 log = logging.getLogger("stockdesk.headless")
-MAIL_KINDS = ("bottoming", "plan_level", "flow", "index_level", "congress", "range")
+MAIL_KINDS = ("bottoming", "plan_level", "flow", "index_level", "congress", "range", "rates")
 
 
 def _px(x: float) -> str:
@@ -143,6 +143,8 @@ def tick(engine: Engine | None = None, now: float | None = None) -> Snapshot:
         e.refresh_research()
     if e.flow_due():
         e.scan_flow()
+    if e.rates_due():
+        e.scan_rates()
     if e.congress_due():
         rep = e.scan_congress()
         for _ in range(3):                    # no window to keep responsive here: read a backlog faster
