@@ -176,9 +176,13 @@ def day_points(snap) -> list[str]:
         a = last[0]
         out.append(L(f"最近一次国债拍卖：{a['term']} {a['date'][5:]}，倍数 {a.get('btc') or 0:.2f}，{treasury.VERDICT.get(a.get('verdict'), '')}",
                      f"Latest Treasury auction: {a['term']} {a['date'][5:]}, bid-to-cover {a.get('btc') or 0:.2f}, {treasury.VERDICT.get(a.get('verdict'), '')}"))
+    fd = getattr(snap, "funds", None) or {}
+    from . import funds as _funds
+    for p in (fd.get("cftc") or [])[:1]:
+        out.append(L("对冲基金仓位：", "Hedge-fund positioning: ") + _funds.cftc_line(p))
     import time as _t
     hot = [a for a in snap.alerts if a.severity in ("high", "warn") and not a.demo and a.created >= _t.time() - 86400
-           and a.kind in ("index_level", "plan_level", "rates", "bottoming", "range", "congress", "flow")]
+           and a.kind in ("index_level", "plan_level", "rates", "bottoming", "range", "congress", "flow", "funds")]
     hot.sort(key=lambda a: (0 if a.severity == "high" else 1, a.kind != "index_level"))
     for a in hot[:3]:
         out.append(L(f"{'重要' if a.severity == 'high' else '留意'}：{a.title}", f"{'Important' if a.severity == 'high' else 'Note'}: {a.title}"))

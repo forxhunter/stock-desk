@@ -61,9 +61,9 @@ class Store:
             conn.close()
 
     # ---- key/value -------------------------------------------------------
-    def set_meta(self, key: str, value: Any) -> None:
+    def set_meta(self, key: str, value: Any, updated: float | None = None) -> None:
         with self._conn() as c:
-            c.execute("INSERT OR REPLACE INTO meta VALUES(?,?,?)", (key, json.dumps(value), time.time()))
+            c.execute("INSERT OR REPLACE INTO meta VALUES(?,?,?)", (key, json.dumps(value), time.time() if updated is None else updated))
 
     def get_meta(self, key: str, default: Any = None, max_age: float | None = None) -> Any:
         with self._conn() as c:

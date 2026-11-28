@@ -6,12 +6,12 @@ import math
 import os
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Callable
 
 import pandas as pd
 
-from . import brief, briefing, congress, credentials, depth, flow, insight, notify, paths, plans, playbook, treasury
+from . import brief, briefing, congress, credentials, depth, flow, funds, insight, notify, paths, plans, playbook, treasury
 from .adapters import congress as congress_src
 from .adapters.base import AdapterError, AdapterUnavailable, BrokerAdapter, RateLimited
 from .adapters.ibkr_cp import IbkrClientPortalAdapter
@@ -110,9 +110,14 @@ class Snapshot:
     playbook: playbook.Playbook | None = None                     # drawdown rungs, their record, the user's own actions
     rates: dict | None = None                                     # Treasury yields and recent auctions
     depth: dict | None = None                                     # S&P depth from free data (activity, spread, option walls)
+    funds: dict | None = None                                     # hedge-fund positioning and filings (CFTC / FINRA / SEC)
 
     def get(self, symbol: str) -> TickerView | None:
         return next((t for t in self.tickers if t.symbol == symbol), None)
+
+
+def snap_symbols(snap) -> set[str]:
+    return {v.symbol for v in getattr(snap, "tickers", None) or []}
 
 
 class Engine:
@@ -149,6 +154,7 @@ class Engine:
         self._studies: dict[str, tuple] = {}              # symbol -> (key, drawdown study of the index)
         self._rates: dict | None = self.store.get_meta("rates:report", None)
         self._depth: dict | None = self.store.get_meta("depth:spx", None)
+        self._funds: dict | None = self.store.get_meta("funds:report", None)
         self._book: dict = {}                             # the user's playbook file
         self._books: dict[str, playbook.IndexBook] = {}
         self._cg_bars: dict[str, pd.DataFrame] = {}       # price history of the stocks members traded
@@ -187,7 +193,7 @@ class Engine:
         adapters = self._adapters()
         active = {a.name for a in adapters}
         for name in list(self._status):
-            if name not in active and name not in ("yahoo", "semianalysis", "polymarket", "email", "flow", "congress", "remote", "rates"):
+            if name not in active and name not in ("yahoo", "semianalysis", "polymarket", "email", "flow", "congress", "remote", "rates", "funds"):
                 self._status.pop(name, None)
                 self._broker.pop(name, None)
         if not force and time.time() - self._broker_at < float(self.cfg.get("sources.broker_refresh_seconds", 300)):
@@ -653,6 +659,244 @@ class Engine:
                              treasury.curve_line(s) + "\n" + mean, {"brief": [treasury.curve_line(s), L("意味着：", "What it means: ") + mean]}))
         return out
 
+    # ------------------------------------------------------------------ hedge funds and large holders (public records)
+    def funds_due(self) -> bool:
+        if not self.cfg.get("funds.enabled", True):
+            return False
+        age = self.store.meta_age("funds:at")
+        return age is None or age > float(self.cfg.get("funds.scan_minutes", 60)) * 60
+
+    def _part_due(self, key: str, hours: float) -> bool:
+        age = self.store.meta_age(f"funds:at:{key}")
+        return age is None or age > hours * 3600
+
+    def scan_funds(self, getter=None, post=None, today=None) -> dict | None:
+        """CFTC positioning, FINRA short data and SEC filings; each part on its own schedule (they are published that slowly)."""
+        kw = {"getter": getter} if getter is not None else {}
+        today = today or datetime.now().date()
+        rep = dict(self._funds or {})
+        errors: dict = dict(rep.get("errors") or {})
+        syms = funds.us_symbols(self.watchlist.symbols())
+        tracked = list(dict.fromkeys(syms + ["SPY", "QQQ"]))
+
+        def run(key, hours, fn):
+            if not self._part_due(key, hours):
+                return
+            try:
+                fn()
+                errors.pop(key, None)
+            except AdapterError as e:
+                errors[key] = str(e)
+            except Exception as e:
+                errors[key] = L(f"内部错误 {type(e).__name__}", f"internal error {type(e).__name__}")
+                log.exception("funds %s failed", key)
+            self.store.set_meta(f"funds:at:{key}", time.time())
+
+        def cftc():
+            rep["cftc"] = funds.cftc_positions(funds.fetch_cftc(**kw), today)
+
+        def shvol():
+            cache = self.store.get_meta("funds:shvol", {}) or {}
+            if set(tracked) - set(cache.get("_syms", [])):
+                cache = {"_syms": tracked, "_none": []}
+            days, none = {k: v for k, v in cache.items() if not k.startswith("_")}, set(cache.get("_none", []))
+            d, have = today, 0
+            for _ in range(45):                   # newest first, until 22 trading days are in hand
+                k = d.isoformat()
+                if k in days:
+                    have += 1
+                elif d.weekday() < 5 and k not in none:
+                    r = funds.fetch_shvol(d, tracked, **kw)
+                    if r is not None:
+                        days[k] = r
+                        have += 1
+                    elif (today - d).days >= 2:
+                        none.add(k)               # a holiday: do not ask again
+                if have >= 22:
+                    break
+                d -= timedelta(days=1)
+            keep = sorted(days)[-30:]
+            self.store.set_meta("funds:shvol", {"_syms": tracked, "_none": sorted(none)[-40:], **{k: days[k] for k in keep}})
+            days = {k: days[k] for k in keep}
+            rep["shvol"] = {s: st for s in tracked if (st := funds.shvol_stats(days, s))}
+
+        def short_int():
+            p = {"post": post} if post is not None else {}
+            out = {}
+            failed = []
+            for s in tracked:
+                try:
+                    si = funds.short_interest(funds.fetch_short_interest(s, today, **p))
+                except AdapterError:
+                    failed.append(s)
+                    si = (rep.get("si") or {}).get(s)          # keep the last good figure
+                if si:
+                    out[s] = si
+            rep["si"] = out
+            if failed and len(failed) == len(tracked):
+                raise AdapterError(L("FINRA 空头仓位读取失败", "FINRA short interest could not be read"))
+
+        contact = str(self.cfg.get("funds.sec_contact", "") or "").strip()
+        sec = funds.Sec(contact, **kw)
+
+        def issuers():
+            cik = dict(funds.CIK)
+            if contact and set(syms) - set(cik):
+                try:
+                    cik.update(sec.tickers())
+                except (AdapterError, ValueError, KeyError):
+                    pass
+            cache = self.store.get_meta("funds:f4cache", {}) or {}
+            ins, hold = [], []
+            cut4, cut13 = (today - timedelta(days=int(self.cfg.get("funds.insider_days", 30)))).isoformat(), (today - timedelta(days=120)).isoformat()
+            for s in syms:
+                if s not in cik:
+                    continue
+                for f in sec.submissions(cik[s]):
+                    if f["form"] == "4" and f["filed"] >= cut4:
+                        if contact and f["acc"] not in cache:
+                            try:
+                                cache[f["acc"]] = funds.parse_form4(sec.doc(cik[s], f["acc"], f["doc"].split("/")[-1]))
+                            except (AdapterError, Exception):
+                                cache[f["acc"]] = {"owner": "", "role": "", "plan": False, "tx": [], "error": True}
+                        ins.append({"symbol": s, "filed": f["filed"], "acc": f["acc"], "cik": cik[s], **(cache.get(f["acc"]) or {"tx": []})})
+                    elif f["form"] in funds.HOLDER_FORMS and f["filed"] >= cut13:
+                        if contact and f["acc"] not in cache:
+                            try:
+                                cache[f["acc"]] = funds.parse_holder(sec.doc(cik[s], f["acc"], f["doc"].split("/")[-1]))
+                            except (AdapterError, Exception):
+                                cache[f["acc"]] = {"error": True}
+                        hold.append({"symbol": s, "form": f["form"], "filed": f["filed"], "acc": f["acc"], "cik": cik[s], **(cache.get(f["acc"]) or {})})
+            live = {x["acc"] for x in ins + hold}
+            self.store.set_meta("funds:f4cache", {k: v for k, v in cache.items() if k in live})
+            rep["insiders"], rep["holders"] = ins, hold
+
+        def f13():
+            cusips = {s: c for s in syms + ["SPY", "QQQ"] if (c := (self.cfg.get("funds.cusips", {}) or {}).get(s) or funds.CUSIP.get(s))}
+            want = sorted(set(cusips.values()))
+            budget = int(self.cfg.get("funds.max_13f_per_scan", 8))
+            filings, pending = {}, 0
+            for cik in funds.FUNDS:
+                subs = [f for f in sec.submissions(cik) if f["form"] == "13F-HR"]
+                pick, seen = [], set()
+                for f in subs:
+                    if f["period"] not in seen:
+                        seen.add(f["period"])
+                        pick.append(f)
+                    if len(pick) == 2:
+                        break
+                got = []
+                for f in pick:
+                    key = f"funds:13f:{f['acc']}"
+                    c = self.store.get_meta(key, None)
+                    if not c or sorted(c.get("cusips", [])) != want:
+                        if budget <= 0:
+                            pending += 1
+                            continue
+                        budget -= 1
+                        name = funds.infotable_name(sec.files(cik, f["acc"]))
+                        rows = funds.parse_13f(sec.doc(cik, f["acc"], name), want) if name else {}
+                        c = {"period": f["period"], "filed": f["filed"], "cusips": want, "rows": rows}
+                        self.store.set_meta(key, c)
+                    got.append(c)
+                if got:
+                    filings[cik] = got
+            rep["f13"] = funds.compare_13f(filings, cusips)
+            rep["f13_pending"] = pending
+            rep["f13_missing"] = [s for s in syms if s not in cusips]
+            if pending:
+                rep["_f13_again"] = True
+
+        run("cftc", 6, cftc)
+        run("shvol", 3, shvol)
+        run("si", 12, short_int)
+        run("issuers", 4, issuers)
+        if contact:
+            run("f13", 12, f13)
+            if rep.pop("_f13_again", False):      # more filings left: due again at the next scan
+                self.store.set_meta("funds:at:f13", time.time(), updated=time.time() - 12 * 3600)
+        rep.update({"ts": time.time(), "errors": errors, "sec_ready": bool(contact), "today": today.isoformat()})
+        self._funds = rep
+        self.store.set_meta("funds:report", rep)
+        self.store.set_meta("funds:at", time.time())
+        bad = L("；", "; ").join(f"{k} {v}" for k, v in errors.items())
+        cf = (rep.get("cftc") or [{}])[0].get("date", "—")
+        msg = L(f"对冲基金数据：CFTC 截至 {cf}" + ("" if contact else "；SEC 部分（13F、内部人内容）未开启：需要在 data/config.yaml 填 funds.sec_contact")
+                + (f"；出错：{bad}" if bad else ""),
+                f"Fund data: CFTC as of {cf}" + ("" if contact else "; SEC parts (13F, insider details) off: fill in funds.sec_contact in data/config.yaml")
+                + (f"; errors: {bad}" if bad else ""))
+        self._status["funds"] = ("error" if len(errors) >= 3 else "ok", msg)
+        return rep
+
+    def _funds_alerts(self, snap: Snapshot) -> list[Alert]:
+        rep = self._funds
+        if not rep or not self.cfg.get("funds.enabled", True):
+            return []
+        today = datetime.now().date()
+        out: list[Alert] = []
+        tail = L("数据来自 CFTC / FINRA / SEC 的公开记录，有延迟（见上）。只是信号，不是买卖建议。",
+                 "Data from public CFTC / FINRA / SEC records, delayed (see above). A signal only, not a recommendation.")
+        hi, lo = float(self.cfg.get("funds.cftc_extreme", 95)), 100 - float(self.cfg.get("funds.cftc_extreme", 95))
+        for p in rep.get("cftc") or []:
+            line, read = funds.cftc_line(p, today), funds.cftc_reading(p)
+            if p["rank"] >= hi or p["rank"] <= lo:
+                side = L("最偏多", "most long") if p["rank"] >= hi else L("最偏空", "most short")
+                title = L(f"对冲基金在{p['name']}上的仓位到了近 3 年{side}的一端（{p['rank']:.0f}% 分位）",
+                          f"Hedge funds' {p['name']} position at the {side} end of 3 years ({p['rank']:.0f}th percentile)")
+                out.append(Alert(f"funds:cftc:{p['code']}:{p['date']}", "funds", "", "warn" if p["kind"] == "equity" else "info", title,
+                                 "\n".join([line, L("怎么看：", "How to read it: ") + read, tail]),
+                                 {"brief": [line, L("意味着：", "What it means: ") + read]}))
+            elif p.get("change") is not None and p["change_sd"] and abs(p["change"]) >= 2 * p["change_sd"] and p["kind"] == "equity":
+                title = L(f"对冲基金一周内在{p['name']}上{'大幅加多' if p['change'] > 0 else '大幅加空'} {abs(p['change']):,.0f} 张",
+                          f"Hedge funds {'added longs' if p['change'] > 0 else 'added shorts'} of {abs(p['change']):,.0f} {p['name']} contracts in a week")
+                out.append(Alert(f"funds:cftcmove:{p['code']}:{p['date']}", "funds", "", "info", title,
+                                 "\n".join([line, L(f"一周变化是近 3 年周变化标准差的 {abs(p['change']) / p['change_sd']:.1f} 倍。", f"The weekly change is {abs(p['change']) / p['change_sd']:.1f}x the 3-year standard deviation of weekly changes."), tail]),
+                                 {"brief": [line]}))
+        for s, st in (rep.get("shvol") or {}).items():
+            if st["z"] >= float(self.cfg.get("funds.shvol_z", 2.5)) and s in snap_symbols(snap):
+                line = funds.shvol_line(s, st, today)
+                out.append(Alert(f"funds:shvol:{s}:{st['date']}", "funds", s, "info", L(f"{s} 卖空成交占比明显高于平时", f"{s} short-sale share of volume well above usual"),
+                                 "\n".join([line, L("场外卖空成交里有做市商的正常卖空，只有和自身平时相比的偏离才有参考价值；它不是空头仓位。", "Off-exchange short volume includes market makers' routine short sales; only the departure from the stock's own average means anything. It is not short interest."), tail]),
+                                 {"brief": [line]}))
+        for s, si in (rep.get("si") or {}).items():
+            if si["change_pct"] >= float(self.cfg.get("funds.si_jump_pct", 20)) and s in snap_symbols(snap):
+                line = funds.si_line(s, si, today)
+                out.append(Alert(f"funds:si:{s}:{si['date']}", "funds", s, "info", L(f"{s} 空头仓位比上期增加 {si['change_pct']:.0f}%", f"{s} short interest up {si['change_pct']:.0f}% on the previous report"),
+                                 "\n".join([line, tail]), {"brief": [line]}))
+        cut = (today - timedelta(days=14)).isoformat()
+        min_buy = float(self.cfg.get("funds.insider_buy_usd", 100000))
+        for f in rep.get("insiders") or []:
+            t = [x for x in f.get("tx") or [] if x["code"] in ("P", "S")]
+            if not t or max(x["date"] for x in t) < cut:
+                continue
+            usd = sum(x["shares"] * x["price"] for x in t)
+            line = funds.insider_line(f["symbol"], f, today)
+            if t[0]["code"] == "P" and usd >= min_buy:
+                out.append(Alert(f"funds:f4:{f['acc']}", "funds", f["symbol"], "warn", L(f"{f['symbol']} 内部人公开市场买入约 ${usd / 1e6:,.2f}M", f"{f['symbol']} insider open-market buy of about ${usd / 1e6:,.2f}M"),
+                                 "\n".join([line, L("内部人用自己的钱在公开市场买入比卖出少见得多（卖出常因税务、分散持股或预设计划），所以买入更值得注意。", "Insiders buying with their own money is much rarer than selling (sales are often for taxes, diversification or pre-set plans), so buys say more."), tail]),
+                                 {"brief": [line]}))
+            elif t[0]["code"] == "S" and usd >= float(self.cfg.get("funds.insider_sell_usd", 5e6)) and not f.get("plan"):
+                out.append(Alert(f"funds:f4:{f['acc']}", "funds", f["symbol"], "info", L(f"{f['symbol']} 内部人卖出约 ${usd / 1e6:,.1f}M（非预设计划）", f"{f['symbol']} insider sale of about ${usd / 1e6:,.1f}M (not a pre-set plan)"),
+                                 "\n".join([line, tail]), {"brief": [line]}))
+        for h in rep.get("holders") or []:
+            if h["filed"] < cut or h["form"].endswith("/A"):
+                continue
+            line = funds.holder_line(h["symbol"], h, today)
+            act = "13D" in h["form"]
+            out.append(Alert(f"funds:13dg:{h['acc']}", "funds", h["symbol"], "warn" if act else "info",
+                             L(f"{h['symbol']} 有人越过 5% 持股并报送 {'13D（可能谋求影响公司）' if act else '13G（被动持股）'}",
+                               f"{h['symbol']}: a holder crossed 5 % and filed {'13D (may seek influence)' if act else '13G (passive)'}"),
+                             "\n".join([line, tail]), {"brief": [line]}))
+        f13 = rep.get("f13") or {}
+        for s, v in f13.items():
+            if not v.get("period") or s not in snap_symbols(snap) or not v["rows"]:
+                continue
+            line = funds.f13_line(s, v, today)
+            out.append(Alert(f"funds:13f:{s}:{v['period']}", "funds", s, "info", L(f"{s} 对冲基金季度持仓变化（截至 {v['period']}）", f"{s} hedge funds' quarterly holdings (as of {v['period']})"),
+                             "\n".join([line, L("13F 只报多头，且晚 6 周以上，说明的是上个季度的方向，不是现在的仓位。", "13F shows longs only and is 6+ weeks old: it tells last quarter's direction, not today's positions."), tail]),
+                             {"brief": [line]}))
+        return out
+
     # ------------------------------------------------------------------ trades disclosed by members of Congress
     def congress_due(self) -> bool:
         if not self.cfg.get("congress.enabled", True):
@@ -990,12 +1234,13 @@ class Engine:
         try:
             self._extra_alerts = (self._index_alerts(snap) + self._bottoming(snap) + self._plan_alerts(snap)
                                   + self._range_alerts(snap) + self._flow_alerts() + self._congress_alerts(snap)
-                                  + self._rates_alerts(snap))
+                                  + self._rates_alerts(snap) + self._funds_alerts(snap))
         finally:
             self._building = None
         self._playbook(snap)
         snap.rates = self._rates if self.cfg.get("rates.enabled", True) else None
         snap.depth = self._depth
+        snap.funds = self._funds if self.cfg.get("funds.enabled", True) else None
         snap.flow = self._flow if self.cfg.get("flow.enabled", True) else None
         snap.congress = self._cg if self.cfg.get("congress.enabled", True) else None
         self._behaviour(snap, positions, prices)
@@ -1529,7 +1774,8 @@ class Engine:
         cg_min = ranks.get(str(self.cfg.get("congress.email_min_severity", "warn")), 1)
         cg_left = max(0, int(self.cfg.get("congress.max_emails_per_day", 6)) - int(quota.get(f"cg{day}", 0)))
         cgs = [a for a in todo if a.kind == "congress" and ranks.get(a.severity, 0) >= cg_min][:cg_left]
-        todo = [a for a in todo if a.kind not in ("flow", "congress")
+        fd_min = ranks.get(str(self.cfg.get("funds.email_min_severity", "warn")), 1)
+        todo = [a for a in todo if a.kind not in ("flow", "congress") and not (a.kind == "funds" and ranks.get(a.severity, 0) < fd_min)
                 and not (a.kind == "index_level" and ranks.get(a.severity, 0) < idx_min)] + flows + cgs
         if not todo:
             self._status.setdefault("email", ("ok", L(f"邮件提醒：已开启（发往 {s['to']}）", f"E-mail alerts: on (sending to {s['to']})")))

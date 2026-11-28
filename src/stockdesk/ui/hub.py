@@ -21,7 +21,7 @@ from . import render
 from . import theme as T
 from . import win11
 
-TABS = ["briefing", "portfolio", "alerts", "pretrade", "research", "flow", "congress", "playbook", "sources"]
+TABS = ["briefing", "portfolio", "alerts", "pretrade", "research", "flow", "funds", "congress", "playbook", "sources"]
 
 
 class NoWheel(QObject):
@@ -173,6 +173,11 @@ class HubWindow(QWidget):
         lay.addWidget(self.flow)
         self.tabs.addTab(w, L("异动扫描", "Unusual-activity scan"))
 
+        # -- hedge funds and large holders
+        self.funds = _browser()
+        self.funds.anchorClicked.connect(self._open_link)
+        self.tabs.addTab(self.funds, L("对冲基金", "Hedge funds"))
+
         # -- trades disclosed by members of Congress
         self.congress = _browser()
         self.congress.anchorClicked.connect(self._open_link)
@@ -217,6 +222,7 @@ class HubWindow(QWidget):
         self._keep_scroll(self.flow, render.flow_html(snap.flow, self.pal, snap.rates))
         hot = sum(1 for i in snap.flow.items if i.severity != "info") if snap.flow else 0
         self.tabs.setTabText(TABS.index("flow"), L(f"异动扫描（{hot}）", f"Unusual-activity scan ({hot})") if hot else L("异动扫描", "Unusual-activity scan"))
+        self._keep_scroll(self.funds, render.funds_html(snap.funds, self.pal, {v.symbol for v in snap.tickers}))
         self._keep_scroll(self.congress, render.congress_html(snap.congress, self.pal, {v.symbol for v in snap.tickers}))
         self._keep_scroll(self.playbook, render.private_html(L("预案", "playbook")) if T.PRIVATE else render.playbook_html(snap.playbook, self.pal))
         self.status.setHtml(render.sources_html(snap))

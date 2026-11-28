@@ -252,6 +252,88 @@ def rates_html(rates) -> str:
     return "".join(out)
 
 
+def funds_html(rep, pal: T.Palette, watch: set[str] | None = None) -> str:
+    from .. import funds
+    out = [_note(L("对冲基金和大户在做什么，全部来自<b>公开记录</b>（CFTC、FINRA、SEC）。这些机构不用实时公开交易，所以<b>每条都写明数据截至哪天、晚了几天</b>。"
+                   "只是信号，不是买卖建议。", "What hedge funds and large holders are doing, all from <b>public records</b> (CFTC, FINRA, SEC). They do not publish trades "
+                   "in real time, so <b>every line says what date it describes and how many days old it is</b>. Signals only, not recommendations."), T.AMBER)]
+    if rep is None:
+        return "".join(out) + _note(L("已关闭（data/config.yaml 里 funds.enabled）。", "Off (funds.enabled in data/config.yaml)."))
+    if not rep.get("ts"):
+        return "".join(out) + _note(L("还没有数据，第一次读取会在启动后几分钟内完成。", "No data yet; the first read finishes within a few minutes of starting."))
+    err = rep.get("errors") or {}
+    out.append(_note(L(f"上次读取 {datetime.fromtimestamp(rep['ts']):%m-%d %H:%M}。", f"Last read {datetime.fromtimestamp(rep['ts']):%m-%d %H:%M}.")
+                     + (L("　出错：", "  Errors: ") + esc(L("；", "; ").join(f"{k} {v}" for k, v in err.items())) if err else "")))
+    para = lambda t, c=T.TEXT: f'<p style="margin:3px 0 3px 10px; color:{c};">{esc(t)}</p>'
+    watch = watch or set()
+
+    out.append(_h(L("期货仓位（CFTC 持仓报告 · 杠杆基金）", "Futures positioning (CFTC · leveraged funds)"), L("每周一次 · 周二的仓位，周五公布", "weekly · Tuesday's positions, published Friday")))
+    for p in rep.get("cftc") or []:
+        col = T.RED if p["rank"] <= 5 or p["rank"] >= 95 else T.TEXT
+        out.append(para(funds.cftc_line(p), col))
+        out.append(f'<p style="margin:0 0 6px 22px; color:{T.DIM}; font-size:9pt;">{esc(funds.cftc_reading(p))}</p>')
+    if not rep.get("cftc"):
+        out.append(_note(L("没有取到 CFTC 数据。", "No CFTC data.")))
+
+    out.append(_h(L("空头（FINRA）", "Shorts (FINRA)"), L("空头仓位每月两次 · 每日卖空成交当晚公布", "short interest twice a month · daily short volume same evening")))
+    syms = [s for s in sorted(set((rep.get("si") or {})) | set((rep.get("shvol") or {}))) if s in watch or s in ("SPY", "QQQ")]
+    for s in syms:
+        if s in (rep.get("si") or {}):
+            out.append(para(funds.si_line(s, rep["si"][s])))
+        if s in (rep.get("shvol") or {}):
+            st = rep["shvol"][s]
+            out.append(para(funds.shvol_line(s, st), T.AMBER if st["z"] >= 2 else T.SUB))
+    out.append(_note(L("每日卖空成交只含场外成交，包括做市商为接单做的卖空，40–55% 很常见；只看和它自己平时的偏离。非美股（如海力士）没有这些数据。",
+                       "Daily short volume is off-exchange only and includes market makers' short sales made to fill orders; 40-55 % is common, so only the "
+                       "departure from the stock's own average matters. Non-US listings (such as SK Hynix) have no such data.")))
+
+    out.append(_h(L("内部人交易与 5% 举牌（SEC Form 4 / 13D / 13G）", "Insider trades and 5 % holders (SEC Form 4 / 13D / 13G)"),
+                  L("Form 4 交易后 2 个工作日内报送 · 13D 5 个工作日内", "Form 4 within 2 business days · 13D within 5")))
+    ins = [f for f in rep.get("insiders") or [] if funds.insider_line(f["symbol"], f)]
+    for f in ins[:15]:
+        out.append(para(funds.insider_line(f["symbol"], f), T.GREEN if any(x["code"] == "P" for x in f["tx"]) else T.TEXT))
+    other = len(rep.get("insiders") or []) - len(ins)
+    if other > 0:
+        out.append(_note(L(f"另有 {other} 份 Form 4 是期权行权、授予股票或代扣税等，不是公开市场买卖，略过。" if rep.get("sec_ready") else
+                           f"近期有 {other} 份 Form 4，内容需要开启 SEC 读取（见下）。",
+                           f"{other} more Form 4s are option exercises, grants or tax withholding, not open-market trades: skipped." if rep.get("sec_ready") else
+                           f"{other} recent Form 4s; reading them needs SEC access turned on (see below).")))
+    for h in rep.get("holders") or []:
+        out.append(para(funds.holder_line(h["symbol"], h)))
+    if not ins and not rep.get("holders") and not other:
+        out.append(_note(L("近期没有。台积电是外国发行人，不报 Form 4。", "None recently. TSMC is a foreign issuer and does not file Form 4.")))
+
+    out.append(_h(L("对冲基金季度持仓（SEC 13F）", "Hedge funds' quarterly holdings (SEC 13F)"), L("季末持仓 · 最多晚 45 天报送 · 只有多头", "quarter-end · filed up to 45 days later · longs only")))
+    if not rep.get("sec_ready"):
+        out.append(_note(L("SEC 要求程序在请求里写明联系方式，否则拒绝访问。请在 data/config.yaml 里自己加一行 <b>funds: {sec_contact: \"你的邮箱\"}</b>，"
+                           "之后 13F 和内部人交易内容会自动读取。这个联系方式只发给 SEC（sec.gov）。",
+                           "SEC requires automated clients to give a contact address and refuses them otherwise. Add a line <b>funds: {sec_contact: \"your e-mail\"}</b> "
+                           "to data/config.yaml yourself; 13F and insider details are read from then on. It is sent only to SEC (sec.gov)."), T.AMBER))
+    for s, v in (rep.get("f13") or {}).items():
+        if not v.get("rows"):
+            continue
+        out.append(para(funds.f13_line(s, v)))
+        def _row(r):
+            chg = "—" if r["prev"] is None else "{:+,.2f}M".format((r["shares"] - r["prev"]) / 1e6)
+            opt = " ".join("{} {:,.1f}M".format(k, n / 1e6) for k, n in r["options"].items())
+            return (f"<tr><td {_TD}>{esc(r['fund'])}</td><td {_TD} align='right'>{r['shares'] / 1e6:,.2f}M</td><td {_TD} align='right'>{chg}</td>"
+                    f"<td {_TD} align='right'>${r['value'] / 1e9:,.2f}B</td><td {_TD}>{esc(opt)}</td></tr>")
+        rows = "".join(_row(r) for r in v["rows"][:10])
+        head = "".join(f"<th {_TH}>{x}</th>" for x in (L("基金", "Fund"), L("股数", "Shares"), L("比上季", "vs prior"), L("市值", "Value"), L("期权（按标的股数）", "Options (underlying shares)")))
+        out.append(f'<table cellspacing="0" width="100%" style="margin-left:10px;"><tr>{head}</tr>{rows}</table>')
+    if rep.get("f13_pending"):
+        out.append(_note(L(f"还有 {rep['f13_pending']} 份 13F 没读完，之后几轮会补上。", f"{rep['f13_pending']} 13F filings still to read; later rounds will finish them.")))
+    if rep.get("f13_missing"):
+        out.append(_note(L(f"没有这些代码的 CUSIP，13F 无法匹配：{', '.join(rep['f13_missing'])}（可在 data/config.yaml 的 funds.cusips 里补）。",
+                           f"No CUSIP for {', '.join(rep['f13_missing'])}, so 13F cannot be matched (add them under funds.cusips in data/config.yaml).")))
+
+    out.append(_h(L("各数据的延迟", "How late each source is")))
+    out.extend(para(x, T.SUB) for x in funds.delays_text())
+    out.append(_note(L("拿不到的：对冲基金每天的实时买卖、高盛 / 摩根士丹利主经纪商数据、美银客户资金流——这些只给付费客户，媒体偶尔转述。",
+                       "Not available: hedge funds' real-time trades, Goldman / Morgan Stanley prime-brokerage data, BofA client flows: clients only, sometimes quoted in the press.")))
+    return "".join(out)
+
+
 def flow_html(rep, pal: T.Palette, rates=None) -> str:
     from ..flow import TIER_LABEL
     out = [_note(L("按固定规则筛出的<b>异常成交</b>：Polymarket 大额下注、期权放量、期货大幅波动。每条都写明触发了哪条规则和具体数字，"

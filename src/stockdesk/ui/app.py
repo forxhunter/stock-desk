@@ -118,6 +118,8 @@ class Worker(QObject):
                 self.snapshot.emit(self.engine.build_snapshot())
             if self.engine.rates_due():
                 self.engine.scan_rates()
+            if self.engine.funds_due():
+                self.engine.scan_funds()
                 self.snapshot.emit(self.engine.build_snapshot())
             if self.engine.congress_due():
                 self.engine.scan_congress()
@@ -705,7 +707,7 @@ class App(QObject):
             if fresh and self.shots_dir is None:
                 title = fresh[0].title if len(fresh) == 1 else L(f"{len(fresh)} 条新提醒", f"{len(fresh)} new alerts")
                 body = fresh[0].body.split("\n")[0][:160] if len(fresh) == 1 else L("；", "; ").join(a.title for a in fresh[:4])
-                private = T.PRIVATE and any(a.kind not in ("bottoming", "flow", "index_level", "congress", "range", "rates") for a in fresh)
+                private = T.PRIVATE and any(a.kind not in ("bottoming", "flow", "index_level", "congress", "range", "rates", "funds") for a in fresh)
                 self._toast = Toast(title, L("隐私模式：内容已隐藏，点击查看。", "Privacy mode: content hidden, click to view.") if private else body)
                 self._toast.clicked.connect(lambda k=fresh[0].kind: self.open_hub("flow" if k == "flow" and len(fresh) == 1 else "alerts"))
                 self._toast.popup(self.widget.screen())

@@ -22,7 +22,7 @@ from .briefing import RANGE_TEXT
 from .engine import Engine, Snapshot
 
 log = logging.getLogger("stockdesk.headless")
-MAIL_KINDS = ("bottoming", "plan_level", "flow", "index_level", "congress", "range", "rates")
+MAIL_KINDS = ("bottoming", "plan_level", "flow", "index_level", "congress", "range", "rates", "funds")
 
 
 def _px(x: float) -> str:
@@ -112,6 +112,11 @@ def digest(snap: Snapshot, now: float | None = None) -> tuple[str, str]:
         out += ["", L("【议员交易】（近两天披露；只列评级偏准以上的议员，或涉及你自选的）",
                       "[Congress trades] (disclosed in the last two days; only members rated fairly accurate or better, or trades in your watchlist)")] + cg
 
+    fl = funds_lines(getattr(snap, "funds", None), {v.symbol for v in snap.tickers})
+    if fl:
+        out += ["", L("【对冲基金与大户】（公开记录，每条都注明数据截至哪天、晚了几天）",
+                      "[Hedge funds and large holders] (public records; each line says how old it is)")] + fl
+
     today = [a for a in snap.alerts if a.kind in MAIL_KINDS and not a.demo and a.created >= (now or time.time()) - 86400]
     if today:
         out += ["", L("【近 24 小时的提醒】", "[Alerts in the last 24 hours]")] + [f"  · {a.title}" for a in today[:12]]
@@ -120,6 +125,27 @@ def digest(snap: Snapshot, now: float | None = None) -> tuple[str, str]:
     if bad:
         out += ["", L("【数据源问题】", "[Data source problems]")] + [f"  · {m}" for m in bad]
     return L(f"Stock Desk 每日信号 {day:%m-%d}", f"Stock Desk daily signals {day:%m-%d}"), "\n".join(out)
+
+
+def funds_lines(rep: dict | None, watch: set[str]) -> list[str]:
+    from datetime import date as _date, timedelta
+    from . import funds
+    if not rep:
+        return []
+    out = [f"  · {funds.cftc_line(p)}" for p in rep.get("cftc") or [] if p["kind"] == "equity"]
+    for s in sorted(watch):
+        if s in (rep.get("si") or {}):
+            out.append(f"  · {funds.si_line(s, rep['si'][s])}")
+        if s in (rep.get("shvol") or {}):
+            out.append(f"  · {funds.shvol_line(s, rep['shvol'][s])}")
+    cut = (_date.today() - timedelta(days=7)).isoformat()
+    for f in rep.get("insiders") or []:
+        if f["filed"] >= cut and (line := funds.insider_line(f["symbol"], f)):
+            out.append(f"  · {line}")
+    for h in rep.get("holders") or []:
+        if h["filed"] >= cut:
+            out.append(f"  · {funds.holder_line(h['symbol'], h)}")
+    return out
 
 
 def digest_due(cfg, store, now: float | None = None) -> bool:
@@ -145,6 +171,8 @@ def tick(engine: Engine | None = None, now: float | None = None) -> Snapshot:
         e.scan_flow()
     if e.rates_due():
         e.scan_rates()
+    if e.funds_due():
+        e.scan_funds()
     if e.congress_due():
         rep = e.scan_congress()
         for _ in range(3):                    # no window to keep responsive here: read a backlog faster
